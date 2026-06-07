@@ -34,9 +34,12 @@ def _precomputed_convert_filename(
     source_kind: str,
     target_format: ConversionFormat,
     source_variant: str | None,
+    render_mode: str | None,
 ) -> str:
     path = Path(filename)
     if target_format == ConversionFormat.PNG:
+        if render_mode not in (None, "", "mobile"):
+            return ""
         if source_kind == "summary":
             if source_variant == "summary_no_table":
                 return f"{path.stem}_no_table.png"
@@ -53,6 +56,7 @@ def _find_precomputed_conversion(
     artifact: StoredArtifact,
     target_format: ConversionFormat,
     source_variant: str | None,
+    render_mode: str | None,
 ) -> StoredArtifact | None:
     source_kind = classify_artifact_filename(artifact.filename) or ""
     filename = _precomputed_convert_filename(
@@ -60,6 +64,7 @@ def _find_precomputed_conversion(
         source_kind,
         target_format,
         source_variant,
+        render_mode,
     )
     if not filename or filename == artifact.filename:
         return None
@@ -396,6 +401,7 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
         artifact=artifact,
         target_format=target_format,
         source_variant=payload.source_variant,
+        render_mode=payload.render_mode,
     )
     if precomputed is not None:
         return _convert_response_for_artifact(precomputed)
@@ -427,6 +433,12 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
         # Execute conversion
         try:
             source_kind = classify_artifact_filename(artifact.filename) or ""
+            render_source_path = source_path
+            explicit_output_path = None
+            if source_kind == "summary" and payload.source_variant == "summary_no_table":
+                render_source_path = source_path.with_stem(f"{source_path.stem}_no_table")
+                MarkdownRemoveTableConverter().convert(source_path, render_source_path)
+
             png_is_table = (
                 target_format == ConversionFormat.PNG
                 and source_kind == "summary_table_md"
@@ -436,18 +448,30 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                 and source_kind == "summary_table_md"
             )
             convert_options = {}
+            if target_format == ConversionFormat.PNG and source_suffix in _md_suffixes:
+                if payload.render_mode == "desktop":
+                    convert_options.update(width=1440, height=1080, dpr=2)
+                    explicit_output_path = render_source_path.with_name(
+                        f"{render_source_path.stem}_desktop.png"
+                    )
+                else:
+                    convert_options["dpr"] = 4
+                    explicit_output_path = render_source_path.with_suffix(".png")
             if target_format == ConversionFormat.PNG and source_kind == "summary":
-                convert_options["dpr"] = 4
-                convert_options["enhance_stock_tables"] = True
+                convert_options["enhance_stock_tables"] = (
+                    payload.source_variant != "summary_no_table"
+                )
             if target_format == ConversionFormat.PDF and source_kind == "summary":
-                convert_options["enhance_stock_tables"] = True
+                convert_options["enhance_stock_tables"] = (
+                    payload.source_variant != "summary_no_table"
+                )
             if (
                 source_kind in {"summary", "summary_table_md"}
                 and payload.source_variant != "summary_no_table"
             ):
                 stock_statuses = _load_stock_statuses_for_render(
                     artifact=artifact,
-                    source_path=source_path,
+                    source_path=render_source_path,
                 )
                 if stock_statuses:
                     convert_options["stock_statuses"] = stock_statuses
@@ -455,7 +479,6 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                 pubdate = _lookup_artifact_pubdate(artifact.storage_key)
                 if pubdate:
                     convert_options["as_of_date"] = pubdate
-            explicit_output_path = None
             if (
                 source_suffix in _html_suffixes
                 and target_format == ConversionFormat.PNG
@@ -468,8 +491,8 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                         dpr=3,
                         is_mobile=True,
                     )
-                    explicit_output_path = source_path.with_name(
-                        f"{source_path.stem}_mobile.png"
+                    explicit_output_path = render_source_path.with_name(
+                        f"{render_source_path.stem}_mobile.png"
                     )
                 else:
                     convert_options.update(
@@ -478,8 +501,8 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                         dpr=2,
                         is_mobile=False,
                     )
-                    explicit_output_path = source_path.with_name(
-                        f"{source_path.stem}_desktop.png"
+                    explicit_output_path = render_source_path.with_name(
+                        f"{render_source_path.stem}_desktop.png"
                     )
             if _uses_summary_render_html(
                 source_kind,
@@ -490,7 +513,7 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                 output_path.write_text(
                     _build_summary_render_html(
                         artifact=artifact,
-                        source_path=source_path,
+                        source_path=render_source_path,
                         source_kind=source_kind,
                         source_variant=payload.source_variant,
                         stock_statuses=convert_options.get("stock_statuses"),
@@ -499,7 +522,7 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                 )
             else:
                 output_path = convert_file(
-                    source_path,
+                    render_source_path,
                     target_format,
                     output_path=explicit_output_path,
                     is_table=(png_is_table or pdf_is_table),

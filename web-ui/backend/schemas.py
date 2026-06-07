@@ -257,7 +257,7 @@ class ConvertRequest(BaseModel):
     target_format: str = Field(..., description="目标格式：txt, pdf, png, html")
     render_mode: Literal["desktop", "mobile"] | None = Field(
         default=None,
-        description="可选渲染模式，仅用于 HTML -> PNG",
+        description="可选 PNG 渲染模式",
     )
     source_variant: Literal["summary_no_table"] | None = Field(
         default=None,

@@ -633,16 +633,23 @@
     return isConverting(item.downloadId, targetFormat)
   }
 
-  const isFancyPngConverting = (item, renderMode) =>
-    isConverting(item.downloadId, 'png', { render_mode: renderMode })
+  const isPngModeConverting = (item, renderMode) =>
+    isConverting(item.downloadId, 'png', {
+      render_mode: renderMode,
+      ...(item.kind === 'summary_no_table'
+        ? { source_variant: 'summary_no_table' }
+        : {})
+    })
 
-  const isAnyFancyPngConverting = (item) =>
-    isFancyPngConverting(item, 'desktop') ||
-    isFancyPngConverting(item, 'mobile')
+  const isAnyPngModeConverting = (item) =>
+    isPngModeConverting(item, 'desktop') || isPngModeConverting(item, 'mobile')
 
-  const convertFancyHtmlToPng = (item, renderMode) =>
+  const convertToPng = (item, renderMode) =>
     convertAndDownload(item.downloadId, item.filename, 'png', {
-      render_mode: renderMode
+      render_mode: renderMode,
+      ...(item.kind === 'summary_no_table'
+        ? { source_variant: 'summary_no_table' }
+        : {})
     })
 
   const canDeleteMarkdownArtifact = (item) => {
@@ -867,26 +874,26 @@
               <button
                 class="download download-sm png-export-trigger"
                 type="button"
-                :disabled="isAnyFancyPngConverting(item)"
+                :disabled="isAnyPngModeConverting(item)"
               >
                 <LoaderCircle
-                  v-if="isAnyFancyPngConverting(item)"
+                  v-if="isAnyPngModeConverting(item)"
                   :size="14"
                   class="spin"
                 />
                 <template v-else>
                   <component :is="getFormatIcon('png')" :size="14" />
-                  <span>PNG Export</span>
+                  <span>PNG</span>
                 </template>
               </button>
               <div class="png-export-options">
                 <button
                   type="button"
-                  :disabled="isFancyPngConverting(item, 'desktop')"
-                  @click="convertFancyHtmlToPng(item, 'desktop')"
+                  :disabled="isPngModeConverting(item, 'desktop')"
+                  @click="convertToPng(item, 'desktop')"
                 >
                   <LoaderCircle
-                    v-if="isFancyPngConverting(item, 'desktop')"
+                    v-if="isPngModeConverting(item, 'desktop')"
                     :size="14"
                     class="spin"
                   />
@@ -894,11 +901,11 @@
                 </button>
                 <button
                   type="button"
-                  :disabled="isFancyPngConverting(item, 'mobile')"
-                  @click="convertFancyHtmlToPng(item, 'mobile')"
+                  :disabled="isPngModeConverting(item, 'mobile')"
+                  @click="convertToPng(item, 'mobile')"
                 >
                   <LoaderCircle
-                    v-if="isFancyPngConverting(item, 'mobile')"
+                    v-if="isPngModeConverting(item, 'mobile')"
                     :size="14"
                     class="spin"
                   />
@@ -957,22 +964,49 @@
                   <span>{{ getFormatLabel('pdf') }}</span>
                 </template>
               </button>
-              <button
-                class="download download-sm"
-                type="button"
-                :disabled="isConvertButtonLoading(item, 'png')"
-                @click="onConvertClick(item, 'png')"
-              >
-                <LoaderCircle
-                  v-if="isConvertButtonLoading(item, 'png')"
-                  :size="14"
-                  class="spin"
-                />
-                <template v-else>
-                  <component :is="getFormatIcon('png')" :size="14" />
-                  <span>{{ getFormatLabel('png') }}</span>
-                </template>
-              </button>
+              <div class="png-export-menu">
+                <button
+                  class="download download-sm png-export-trigger"
+                  type="button"
+                  :disabled="isAnyPngModeConverting(item)"
+                >
+                  <LoaderCircle
+                    v-if="isAnyPngModeConverting(item)"
+                    :size="14"
+                    class="spin"
+                  />
+                  <template v-else>
+                    <component :is="getFormatIcon('png')" :size="14" />
+                    <span>{{ getFormatLabel('png') }}</span>
+                  </template>
+                </button>
+                <div class="png-export-options">
+                  <button
+                    type="button"
+                    :disabled="isPngModeConverting(item, 'desktop')"
+                    @click="convertToPng(item, 'desktop')"
+                  >
+                    <LoaderCircle
+                      v-if="isPngModeConverting(item, 'desktop')"
+                      :size="14"
+                      class="spin"
+                    />
+                    <span>Desktop</span>
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="isPngModeConverting(item, 'mobile')"
+                    @click="convertToPng(item, 'mobile')"
+                  >
+                    <LoaderCircle
+                      v-if="isPngModeConverting(item, 'mobile')"
+                      :size="14"
+                      class="spin"
+                    />
+                    <span>Mobile</span>
+                  </button>
+                </div>
+              </div>
               <button
                 v-if="isRenderedSummaryKind(item.kind)"
                 class="download download-sm"
