@@ -9,7 +9,7 @@ import math
 import re
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
-from typing import Any
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -61,20 +61,26 @@ def build_stock_table_cards_html(
     markdown: str,
     *,
     as_of_date: date | datetime | str | None = None,
+    stock_statuses: Mapping[str, StockDailyStatus] | list[StockDailyStatus] | None = None,
 ) -> str:
-    """Render a Markdown stock table as compact HTML cards with baostock data."""
+    """Render a Markdown stock table as compact HTML cards with stock status data."""
     rows = _parse_markdown_table(markdown)
     if not rows:
         return ""
 
     symbols = extract_stock_symbols(markdown)
     statuses: list[StockDailyStatus] = []
-    if symbols:
-        try:
-            statuses = fetch_stock_daily_status(symbols, as_of_date=as_of_date)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to fetch stock status data: %s", exc)
-    status_by_symbol = {status.symbol: status for status in statuses}
+    if stock_statuses is None:
+        if symbols:
+            try:
+                statuses = fetch_stock_daily_status(symbols, as_of_date=as_of_date)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to fetch stock status data: %s", exc)
+        status_by_symbol = {status.symbol: status for status in statuses}
+    elif isinstance(stock_statuses, Mapping):
+        status_by_symbol = dict(stock_statuses)
+    else:
+        status_by_symbol = {status.symbol: status for status in stock_statuses}
 
     cards = "\n".join(
         _render_table_card(row, _find_status_for_table_row(row.raw, status_by_symbol))

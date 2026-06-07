@@ -518,6 +518,7 @@ class MarkdownToPngConverter:
         reuse_browser = options.get("reuse_browser", True)
         as_of_date = options.get("as_of_date")
         enhance_stock_tables = options.get("enhance_stock_tables", False)
+        stock_statuses = options.get("stock_statuses")
 
         # Generate intermediate HTML
         html_path = output_path.with_suffix(".html")
@@ -526,6 +527,7 @@ class MarkdownToPngConverter:
             is_table=is_table,
             as_of_date=as_of_date,
             enhance_stock_tables=enhance_stock_tables,
+            stock_statuses=stock_statuses,
         )
         if is_table:
             if STOCK_CARD_MARKER in body_html:
@@ -594,6 +596,7 @@ class MarkdownToPngConverter:
             is_table=is_table,
             as_of_date=options.get("as_of_date"),
             enhance_stock_tables=options.get("enhance_stock_tables", False),
+            stock_statuses=options.get("stock_statuses"),
         )
         return self._wrap_body_html(
             body_html,
@@ -608,13 +611,19 @@ class MarkdownToPngConverter:
         is_table: bool,
         as_of_date=None,
         enhance_stock_tables: bool = False,
+        stock_statuses=None,
     ) -> str:
         if is_table:
-            return self._run_table_cards(input_path, as_of_date=as_of_date)
+            return self._run_table_cards(
+                input_path,
+                as_of_date=as_of_date,
+                stock_statuses=stock_statuses,
+            )
         if enhance_stock_tables:
             return self._run_markdown_with_stock_table_cards(
                 input_path,
                 as_of_date=as_of_date,
+                stock_statuses=stock_statuses,
             )
         return self._run_pandoc(input_path)
 
@@ -660,19 +669,32 @@ class MarkdownToPngConverter:
             detail = exc.stderr.strip() or exc.stdout.strip() or str(exc)
             raise RuntimeError(f"pandoc conversion failed: {detail}") from exc
 
-    def _run_table_cards(self, md_path: Path, *, as_of_date=None) -> str:
+    def _run_table_cards(
+        self,
+        md_path: Path,
+        *,
+        as_of_date=None,
+        stock_statuses=None,
+    ) -> str:
         markdown_content = md_path.read_text(encoding="utf-8")
         normalized_content = self._normalize_markdown_for_tables(markdown_content)
+        status_options = {"as_of_date": as_of_date}
+        if stock_statuses is not None:
+            status_options["stock_statuses"] = stock_statuses
         cards_html = build_stock_table_cards_html(
             normalized_content,
-            as_of_date=as_of_date,
+            **status_options,
         )
         if cards_html:
             return cards_html
         return self._run_pandoc(md_path)
 
     def _run_markdown_with_stock_table_cards(
-        self, md_path: Path, *, as_of_date=None
+        self,
+        md_path: Path,
+        *,
+        as_of_date=None,
+        stock_statuses=None,
     ) -> str:
         markdown_content = md_path.read_text(encoding="utf-8")
         normalized_content = self._normalize_markdown_for_tables(markdown_content)
@@ -693,9 +715,12 @@ class MarkdownToPngConverter:
                     end += 1
                 table_markdown = "\n".join(lines[index:end]).strip()
                 if table_markdown and extract_stock_symbols(table_markdown):
+                    status_options = {"as_of_date": as_of_date}
+                    if stock_statuses is not None:
+                        status_options["stock_statuses"] = stock_statuses
                     cards_html = build_stock_table_cards_html(
                         table_markdown,
-                        as_of_date=as_of_date,
+                        **status_options,
                     )
                     if cards_html:
                         if markdown_buffer:

@@ -17,6 +17,7 @@ from b2t.storage.base import classify_artifact_filename
 from backend.download_registry import download_registry, media_type_for_filename
 from backend.schemas import ConvertRequest, ConvertResponse
 from backend.dependencies import get_history_db, get_storage_backend
+from backend.stock_cache import get_or_fetch_stock_statuses
 
 router = APIRouter()
 
@@ -131,6 +132,7 @@ def _build_summary_render_html(
     source_path: Path,
     source_kind: str,
     source_variant: str | None,
+    stock_statuses=None,
 ) -> str:
     html_options = _summary_render_html_options(
         artifact=artifact,
@@ -138,6 +140,8 @@ def _build_summary_render_html(
         source_variant=source_variant,
     )
     is_table = bool(html_options.pop("is_table", False))
+    if stock_statuses is not None:
+        html_options["stock_statuses"] = stock_statuses
     return MarkdownToPngConverter().build_render_html(
         source_path,
         is_table=is_table,
@@ -145,13 +149,13 @@ def _build_summary_render_html(
     )
 
 
-def _lookup_artifact_pubdate(storage_key: str) -> str:
+def _lookup_artifact_run_context(storage_key: str) -> tuple[str, str]:
     try:
         db = get_history_db()
         with db._connect() as conn:
             row = conn.execute(
                 """
-                SELECT r.pubdate
+                SELECT r.bvid, r.pubdate
                 FROM transcription_artifacts a
                 JOIN transcription_runs r ON r.run_id = a.run_id
                 WHERE a.storage_key = ?
@@ -160,10 +164,33 @@ def _lookup_artifact_pubdate(storage_key: str) -> str:
                 (storage_key,),
             ).fetchone()
     except Exception:
-        return ""
+        return "", ""
     if row is None:
-        return ""
-    return str(row["pubdate"] or "").strip()
+        return "", ""
+    return str(row["bvid"] or "").strip(), str(row["pubdate"] or "").strip()
+
+
+def _lookup_artifact_pubdate(storage_key: str) -> str:
+    return _lookup_artifact_run_context(storage_key)[1]
+
+
+def _load_stock_statuses_for_render(
+    *,
+    artifact: StoredArtifact,
+    source_path: Path,
+) -> dict:
+    bvid, pubdate = _lookup_artifact_run_context(artifact.storage_key)
+    if not bvid:
+        return {}
+    try:
+        return get_or_fetch_stock_statuses(
+            db=get_history_db(),
+            bvid=bvid,
+            as_of_date=pubdate,
+            markdown_paths=[source_path],
+        )
+    except Exception:
+        return {}
 
 
 @router.get("/api/download/{download_id}")
@@ -297,12 +324,22 @@ def preview_rendered_html(
             preview_source_path = source_path.with_stem(f"{source_path.stem}_no_table")
             MarkdownRemoveTableConverter().convert(source_path, preview_source_path)
 
+        stock_statuses = None
+        if source_variant != "summary_no_table" and source_kind in {
+            "summary",
+            "summary_table_md",
+        }:
+            stock_statuses = _load_stock_statuses_for_render(
+                artifact=artifact,
+                source_path=preview_source_path,
+            )
         try:
             html = _build_summary_render_html(
                 artifact=artifact,
                 source_path=preview_source_path,
                 source_kind=source_kind,
                 source_variant=source_variant,
+                stock_statuses=stock_statuses,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -401,9 +438,20 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
             convert_options = {}
             if target_format == ConversionFormat.PNG and source_kind == "summary":
                 convert_options["dpr"] = 4
+                convert_options["enhance_stock_tables"] = True
             if target_format == ConversionFormat.PDF and source_kind == "summary":
                 convert_options["enhance_stock_tables"] = True
-            if png_is_table or pdf_is_table:
+            if (
+                source_kind in {"summary", "summary_table_md"}
+                and payload.source_variant != "summary_no_table"
+            ):
+                stock_statuses = _load_stock_statuses_for_render(
+                    artifact=artifact,
+                    source_path=source_path,
+                )
+                if stock_statuses:
+                    convert_options["stock_statuses"] = stock_statuses
+            if source_kind in {"summary", "summary_table_md"}:
                 pubdate = _lookup_artifact_pubdate(artifact.storage_key)
                 if pubdate:
                     convert_options["as_of_date"] = pubdate
@@ -445,6 +493,7 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                         source_path=source_path,
                         source_kind=source_kind,
                         source_variant=payload.source_variant,
+                        stock_statuses=convert_options.get("stock_statuses"),
                     ),
                     encoding="utf-8",
                 )

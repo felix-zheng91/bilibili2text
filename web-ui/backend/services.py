@@ -25,6 +25,7 @@ from b2t.summarize.llm import (
 
 from backend.dependencies import get_history_db
 from backend.download_registry import download_registry
+from backend.stock_cache import get_or_fetch_stock_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +261,31 @@ def _generate_summary_png_exports(
             summary_artifact,
             work_dir,
         )
+        summary_table_artifact = results.get("summary_table_md")
+        table_md_path = (
+            _materialize_artifact_to_file(
+                storage_backend,
+                summary_table_artifact,
+                work_dir,
+            )
+            if summary_table_artifact is not None
+            else None
+        )
+        bvid = getattr(metadata, "bvid", "") if metadata is not None else ""
+        stock_statuses = {}
+        if bvid:
+            try:
+                cache_paths = [summary_path]
+                if table_md_path is not None:
+                    cache_paths.append(table_md_path)
+                stock_statuses = get_or_fetch_stock_statuses(
+                    db=get_history_db(),
+                    bvid=bvid,
+                    as_of_date=as_of_date,
+                    markdown_paths=cache_paths,
+                )
+            except Exception as exc:
+                logger.warning("股票状态缓存预热失败，回退实时查询: %s", exc)
         png_converter = MarkdownToPngConverter()
 
         summary_png_path = summary_path.with_suffix(".png")
@@ -269,6 +295,7 @@ def _generate_summary_png_exports(
             is_table=False,
             as_of_date=as_of_date,
             enhance_stock_tables=True,
+            stock_statuses=stock_statuses or None,
             dpr=4,
         )
         generated["summary_png"] = _store_sibling_artifact(
@@ -289,19 +316,14 @@ def _generate_summary_png_exports(
             path=no_table_png_path,
         )
 
-        summary_table_artifact = results.get("summary_table_md")
-        if summary_table_artifact is not None:
-            table_md_path = _materialize_artifact_to_file(
-                storage_backend,
-                summary_table_artifact,
-                work_dir,
-            )
+        if summary_table_artifact is not None and table_md_path is not None:
             table_png_path = table_md_path.with_suffix(".png")
             png_converter.convert(
                 table_md_path,
                 table_png_path,
                 is_table=True,
                 as_of_date=as_of_date,
+                stock_statuses=stock_statuses or None,
             )
             generated["summary_table_png"] = _store_sibling_artifact(
                 storage_backend=storage_backend,
