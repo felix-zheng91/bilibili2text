@@ -77,6 +77,10 @@
   const emit = defineEmits(['artifactDeleted', 'artifactGenerated'])
   const LOCAL_API_KEY_KEY = 'b2t.public-api-key'
   const LOCAL_DEEPSEEK_API_KEY_KEY = 'b2t.public-deepseek-api-key'
+  const LOCAL_CUSTOM_LLM_BASE_URL_KEY = 'b2t.public-custom-llm-base-url'
+  const LOCAL_CUSTOM_LLM_API_KEY_KEY = 'b2t.public-custom-llm-api-key'
+  const LOCAL_CUSTOM_LLM_MODEL_KEY = 'b2t.public-custom-llm-model'
+  const CUSTOM_LLM_PROFILE_NAME = 'open_public_custom_llm'
 
   const { conversionError, convertAndDownload, isConverting, download } =
     useConversion()
@@ -124,6 +128,23 @@
       return (window.localStorage.getItem(key) || '').trim()
     } catch {
       return ''
+    }
+  }
+
+  const getCustomLlmPayload = () => {
+    if (!props.requiresApiKey) {
+      return {
+        custom_llm_base_url: null,
+        custom_llm_api_key: null,
+        custom_llm_model: null
+      }
+    }
+    return {
+      custom_llm_base_url:
+        readLocalStorage(LOCAL_CUSTOM_LLM_BASE_URL_KEY) || null,
+      custom_llm_api_key:
+        readLocalStorage(LOCAL_CUSTOM_LLM_API_KEY_KEY) || null,
+      custom_llm_model: readLocalStorage(LOCAL_CUSTOM_LLM_MODEL_KEY) || null
     }
   }
 
@@ -180,8 +201,15 @@
     const matched = props.summaryProfiles.find(
       (item) => item.name === effectiveName
     )
+    if (matched?.name === CUSTOM_LLM_PROFILE_NAME) {
+      return `custom(${matched.model || 'model'})`
+    }
     if (matched && typeof matched.name === 'string' && matched.name.trim()) {
       return matched.name.trim()
+    }
+    if (effectiveName === CUSTOM_LLM_PROFILE_NAME) {
+      const model = readLocalStorage(LOCAL_CUSTOM_LLM_MODEL_KEY)
+      return model ? `custom(${model})` : 'custom'
     }
     return effectiveName
   }
@@ -600,7 +628,8 @@
             : null,
           deepseek_api_key: props.requiresApiKey
             ? readLocalStorage(LOCAL_DEEPSEEK_API_KEY_KEY) || null
-            : null
+            : null,
+          ...getCustomLlmPayload()
         })
       })
       const data = await resp.json()

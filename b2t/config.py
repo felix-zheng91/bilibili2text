@@ -13,12 +13,19 @@ DEFAULT_BILIBILI_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
-_SUPPORTED_SUMMARIZE_PROVIDERS = ("bailian", "openrouter", "groq", "deepseek")
+_SUPPORTED_SUMMARIZE_PROVIDERS = (
+    "bailian",
+    "openrouter",
+    "groq",
+    "deepseek",
+    "openai_compatible",
+)
 _SUMMARIZE_PROVIDER_DEFAULT_API_BASE: dict[str, str] = {
     "bailian": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "groq": "https://api.groq.com/openai/v1",
     "deepseek": "https://api.deepseek.com",
+    "openai_compatible": "https://api.openai.com/v1",
 }
 
 

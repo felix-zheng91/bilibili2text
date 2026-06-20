@@ -79,6 +79,9 @@ async def rag_query_stream(
     llm_profile: str = "",
     api_key: str = "",
     deepseek_api_key: str = "",
+    custom_llm_base_url: str = "",
+    custom_llm_api_key: str = "",
+    custom_llm_model: str = "",
 ) -> StreamingResponse:
     authors = [a.strip() for a in filter_authors.split(",") if a.strip()]
     return _rag_query_stream_impl(
@@ -87,6 +90,9 @@ async def rag_query_stream(
         llm_profile=llm_profile,
         api_key=api_key,
         deepseek_api_key=deepseek_api_key,
+        custom_llm_base_url=custom_llm_base_url,
+        custom_llm_api_key=custom_llm_api_key,
+        custom_llm_model=custom_llm_model,
     )
 
 
@@ -98,6 +104,9 @@ async def rag_query_stream_post(payload: RagQueryRequest) -> StreamingResponse:
         llm_profile=(payload.llm_profile or "").strip(),
         api_key=(payload.api_key or "").strip(),
         deepseek_api_key=(payload.deepseek_api_key or "").strip(),
+        custom_llm_base_url=(payload.custom_llm_base_url or "").strip(),
+        custom_llm_api_key=(payload.custom_llm_api_key or "").strip(),
+        custom_llm_model=(payload.custom_llm_model or "").strip(),
     )
 
 
@@ -108,12 +117,18 @@ def _rag_query_stream_impl(
     llm_profile: str,
     api_key: str,
     deepseek_api_key: str,
+    custom_llm_base_url: str,
+    custom_llm_api_key: str,
+    custom_llm_model: str,
 ) -> StreamingResponse:
     """Stream RAG query progress as Server-Sent Events."""
     _require_rag_enabled()
     config = get_runtime_app_config(
         api_key=api_key.strip(),
         deepseek_api_key=deepseek_api_key.strip(),
+        custom_llm_base_url=custom_llm_base_url.strip(),
+        custom_llm_api_key=custom_llm_api_key.strip(),
+        custom_llm_model=custom_llm_model.strip(),
     )
     store = get_rag_store()
     history_db = get_history_db()
@@ -306,7 +321,13 @@ def _rag_query_stream_impl(
 def rag_query(request: RagQueryRequest) -> RagQueryResponse:
     """Answer a question using RAG over indexed video transcripts."""
     _require_rag_enabled()
-    config = get_runtime_app_config()
+    config = get_runtime_app_config(
+        api_key=(request.api_key or "").strip(),
+        deepseek_api_key=(request.deepseek_api_key or "").strip(),
+        custom_llm_base_url=(request.custom_llm_base_url or "").strip(),
+        custom_llm_api_key=(request.custom_llm_api_key or "").strip(),
+        custom_llm_model=(request.custom_llm_model or "").strip(),
+    )
     store = get_rag_store()
 
     try:

@@ -58,6 +58,9 @@ def _run_job(
     ephemeral_upload: bool = False,
     api_key: str | None = None,
     deepseek_api_key: str | None = None,
+    custom_llm_base_url: str | None = None,
+    custom_llm_api_key: str | None = None,
+    custom_llm_model: str | None = None,
 ) -> None:
     normalized_url = (url or "").strip()
     normalized_audio_path = (input_audio_path or "").strip()
@@ -78,6 +81,9 @@ def _run_job(
             require_public_api_key=True,
             api_key=api_key,
             deepseek_api_key=deepseek_api_key,
+            custom_llm_base_url=custom_llm_base_url,
+            custom_llm_api_key=custom_llm_api_key,
+            custom_llm_model=custom_llm_model,
         )
         storage_backend = get_storage_backend()
         stt_storage_backend = get_stt_storage_backend()

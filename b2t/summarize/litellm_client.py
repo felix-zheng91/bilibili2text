@@ -66,6 +66,11 @@ def _to_litellm_model_name(model: str, provider: str) -> str:
             return normalized
         return f"deepseek/{normalized}"
 
+    if provider == "openai_compatible":
+        if normalized.startswith("openai/"):
+            return normalized
+        return f"openai/{normalized}"
+
     return normalized
 
 

@@ -50,7 +50,7 @@ _ALLOWED_VIDEO_SUFFIXES = {
 
 
 def _clean_optional_text(value: str | None) -> str | None:
-    cleaned = value.strip() if value else ""
+    cleaned = value.strip() if isinstance(value, str) else ""
     return cleaned or None
 
 
@@ -163,6 +163,9 @@ def _convert_video_upload_to_audio(video_path: Path) -> Path:
 def _ensure_runtime_ready(
     api_key: str | None = None,
     deepseek_api_key: str | None = None,
+    custom_llm_base_url: str | None = None,
+    custom_llm_api_key: str | None = None,
+    custom_llm_model: str | None = None,
     summary_profile: str | None = None,
 ) -> None:
     try:
@@ -170,6 +173,9 @@ def _ensure_runtime_ready(
             require_public_api_key=True,
             api_key=api_key,
             deepseek_api_key=deepseek_api_key,
+            custom_llm_base_url=custom_llm_base_url,
+            custom_llm_api_key=custom_llm_api_key,
+            custom_llm_model=custom_llm_model,
         )
     except FileNotFoundError as exc:
         raise HTTPException(
@@ -216,6 +222,9 @@ def process_video(payload: ProcessRequest) -> ProcessStartResponse:
     _ensure_runtime_ready(
         api_key=_clean_optional_text(payload.api_key),
         deepseek_api_key=_clean_optional_text(payload.deepseek_api_key),
+        custom_llm_base_url=_clean_optional_text(payload.custom_llm_base_url),
+        custom_llm_api_key=_clean_optional_text(payload.custom_llm_api_key),
+        custom_llm_model=_clean_optional_text(payload.custom_llm_model),
         summary_profile=summary_profile,
     )
 
@@ -237,6 +246,9 @@ def process_video(payload: ProcessRequest) -> ProcessStartResponse:
         auto_generate_fancy_html=payload.auto_generate_fancy_html,
         api_key=_clean_optional_text(payload.api_key),
         deepseek_api_key=_clean_optional_text(payload.deepseek_api_key),
+        custom_llm_base_url=_clean_optional_text(payload.custom_llm_base_url),
+        custom_llm_api_key=_clean_optional_text(payload.custom_llm_api_key),
+        custom_llm_model=_clean_optional_text(payload.custom_llm_model),
     )
 
     return ProcessStartResponse(job_id=str(job["job_id"]))
@@ -252,6 +264,9 @@ def process_uploaded_audio(
     auto_generate_fancy_html: bool = Form(default=False),
     api_key: str | None = Form(default=None),
     deepseek_api_key: str | None = Form(default=None),
+    custom_llm_base_url: str | None = Form(default=None),
+    custom_llm_api_key: str | None = Form(default=None),
+    custom_llm_model: str | None = Form(default=None),
 ) -> ProcessStartResponse:
     if not is_upload_enabled():
         raise HTTPException(
@@ -261,6 +276,9 @@ def process_uploaded_audio(
     _ensure_runtime_ready(
         api_key=_clean_optional_text(api_key),
         deepseek_api_key=_clean_optional_text(deepseek_api_key),
+        custom_llm_base_url=_clean_optional_text(custom_llm_base_url),
+        custom_llm_api_key=_clean_optional_text(custom_llm_api_key),
+        custom_llm_model=_clean_optional_text(custom_llm_model),
         summary_profile=_clean_optional_text(summary_profile),
     )
 
@@ -330,6 +348,9 @@ def process_uploaded_audio(
         auto_generate_fancy_html=auto_generate_fancy_html,
         api_key=_clean_optional_text(api_key),
         deepseek_api_key=_clean_optional_text(deepseek_api_key),
+        custom_llm_base_url=_clean_optional_text(custom_llm_base_url),
+        custom_llm_api_key=_clean_optional_text(custom_llm_api_key),
+        custom_llm_model=_clean_optional_text(custom_llm_model),
     )
 
     return ProcessStartResponse(job_id=job_id)

@@ -83,9 +83,13 @@
   const ACTIVE_JOB_IDS_KEY = 'b2t.active-job-ids'
   const LOCAL_API_KEY_KEY = 'b2t.public-api-key'
   const LOCAL_DEEPSEEK_API_KEY_KEY = 'b2t.public-deepseek-api-key'
+  const LOCAL_CUSTOM_LLM_BASE_URL_KEY = 'b2t.public-custom-llm-base-url'
+  const LOCAL_CUSTOM_LLM_API_KEY_KEY = 'b2t.public-custom-llm-api-key'
+  const LOCAL_CUSTOM_LLM_MODEL_KEY = 'b2t.public-custom-llm-model'
   const LOCAL_OPEN_PUBLIC_SUMMARY_TEMPLATE_KEY =
     'b2t.open-public-summary-template'
   const CUSTOM_SUMMARY_PRESET_VALUE = '__user_custom__'
+  const CUSTOM_LLM_PROFILE_NAME = 'open_public_custom_llm'
   const activeJobs = ref([])
   let activeJobsPollTimer = null
 
@@ -233,6 +237,46 @@
     } catch {
       return ''
     }
+  }
+
+  const getCustomLlmPayload = () => {
+    if (!props.requiresApiKey) {
+      return {
+        custom_llm_base_url: null,
+        custom_llm_api_key: null,
+        custom_llm_model: null
+      }
+    }
+    try {
+      return {
+        custom_llm_base_url:
+          (
+            window.localStorage.getItem(LOCAL_CUSTOM_LLM_BASE_URL_KEY) || ''
+          ).trim() || null,
+        custom_llm_api_key:
+          (
+            window.localStorage.getItem(LOCAL_CUSTOM_LLM_API_KEY_KEY) || ''
+          ).trim() || null,
+        custom_llm_model:
+          (
+            window.localStorage.getItem(LOCAL_CUSTOM_LLM_MODEL_KEY) || ''
+          ).trim() || null
+      }
+    } catch {
+      return {
+        custom_llm_base_url: null,
+        custom_llm_api_key: null,
+        custom_llm_model: null
+      }
+    }
+  }
+
+  const formatSummaryProfileLabel = (profile) => {
+    if (!profile) return ''
+    if (profile.name === CUSTOM_LLM_PROFILE_NAME) {
+      return `custom(${profile.model || 'model'})`
+    }
+    return `${profile.name} (${profile.model})`
   }
 
   const historyPresetOptions = computed(() => {
@@ -383,7 +427,8 @@
           api_key: props.requiresApiKey ? getLocalApiKey() || null : null,
           deepseek_api_key: props.requiresApiKey
             ? getLocalDeepseekApiKey() || null
-            : null
+            : null,
+          ...getCustomLlmPayload()
         })
       })
       const data = await resp.json()
@@ -477,7 +522,8 @@
             api_key: props.requiresApiKey ? getLocalApiKey() : null,
             deepseek_api_key: props.requiresApiKey
               ? getLocalDeepseekApiKey() || null
-              : null
+              : null,
+            ...getCustomLlmPayload()
           })
         }
       )
@@ -719,7 +765,7 @@
                   :key="profile.name"
                   :value="profile.name"
                 >
-                  {{ profile.name }} ({{ profile.model }})
+                  {{ formatSummaryProfileLabel(profile) }}
                 </option>
               </select>
             </div>

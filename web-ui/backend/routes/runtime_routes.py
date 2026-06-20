@@ -1,8 +1,11 @@
 """Runtime mode / feature flags and open-public API key management."""
 
 from fastapi import APIRouter, HTTPException, Query
+from litellm import completion
 
 from backend.schemas import (
+    OpenPublicCustomLlmTestRequest,
+    OpenPublicCustomLlmTestResponse,
     OpenPublicApiKeyStatusResponse,
     OpenPublicApiKeyUpdateRequest,
     RuntimeFeaturesResponse,
@@ -18,6 +21,7 @@ from backend.settings import (
     set_public_api_key,
     set_public_deepseek_api_key,
 )
+from b2t.summarize.litellm_client import _to_litellm_model_name
 
 router = APIRouter()
 
@@ -87,3 +91,49 @@ def clear_open_public_api_key(
     else:
         clear_public_api_key()
     return _build_api_key_status(provider)
+
+
+@router.post(
+    "/api/open-public/custom-llm/test",
+    response_model=OpenPublicCustomLlmTestResponse,
+)
+def test_open_public_custom_llm(
+    payload: OpenPublicCustomLlmTestRequest,
+) -> OpenPublicCustomLlmTestResponse:
+    _ensure_open_public_mode()
+    base_url = payload.base_url.strip().rstrip("/")
+    api_key = payload.api_key.strip()
+    model = payload.model.strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url 不能为空")
+    if not base_url.startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=400,
+            detail="base_url 必须以 http:// 或 https:// 开头",
+        )
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API Key 不能为空")
+    if not model:
+        raise HTTPException(status_code=400, detail="模型名称不能为空")
+
+    try:
+        resp = completion(
+            model=_to_litellm_model_name(model, "openai_compatible"),
+            messages=[{"role": "user", "content": "hi"}],
+            api_key=api_key,
+            api_base=base_url,
+            stream=False,
+        )
+        content = str(resp.choices[0].message.content or "").strip()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"测试连接失败：{exc}",
+        ) from exc
+
+    if not content:
+        raise HTTPException(
+            status_code=502,
+            detail="测试连接失败：模型返回了空响应",
+        )
+    return OpenPublicCustomLlmTestResponse(ok=True, content=content)

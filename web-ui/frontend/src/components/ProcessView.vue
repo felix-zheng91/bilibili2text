@@ -81,6 +81,10 @@
     deepseekApiKeyConfigured: {
       type: Boolean,
       default: false
+    },
+    customLlmConfigured: {
+      type: Boolean,
+      default: false
     }
   })
 
@@ -144,9 +148,13 @@
   const ACTIVE_JOB_IDS_KEY = 'b2t.active-job-ids'
   const LOCAL_API_KEY_KEY = 'b2t.public-api-key'
   const LOCAL_DEEPSEEK_API_KEY_KEY = 'b2t.public-deepseek-api-key'
+  const LOCAL_CUSTOM_LLM_BASE_URL_KEY = 'b2t.public-custom-llm-base-url'
+  const LOCAL_CUSTOM_LLM_API_KEY_KEY = 'b2t.public-custom-llm-api-key'
+  const LOCAL_CUSTOM_LLM_MODEL_KEY = 'b2t.public-custom-llm-model'
   const LOCAL_OPEN_PUBLIC_SUMMARY_TEMPLATE_KEY =
     'b2t.open-public-summary-template'
   const CUSTOM_SUMMARY_PRESET_VALUE = '__user_custom__'
+  const CUSTOM_LLM_PROFILE_NAME = 'open_public_custom_llm'
   const uploadAccept =
     '.aac,.flac,.m4a,.mp3,.ogg,.opus,.wav,.webm,.avi,.m4v,.mkv,.mov,.mp4'
   const uploadFilenamePattern =
@@ -327,6 +335,58 @@
       ).trim()
     } catch {
       return ''
+    }
+  }
+
+  const getLocalCustomLlmConfig = () => {
+    try {
+      return {
+        baseUrl: (
+          window.localStorage.getItem(LOCAL_CUSTOM_LLM_BASE_URL_KEY) || ''
+        ).trim(),
+        apiKey: (
+          window.localStorage.getItem(LOCAL_CUSTOM_LLM_API_KEY_KEY) || ''
+        ).trim(),
+        model: (
+          window.localStorage.getItem(LOCAL_CUSTOM_LLM_MODEL_KEY) || ''
+        ).trim()
+      }
+    } catch {
+      return { baseUrl: '', apiKey: '', model: '' }
+    }
+  }
+
+  const formatSummaryProfileLabel = (profile) => {
+    if (!profile) return ''
+    if (profile.name === CUSTOM_LLM_PROFILE_NAME) {
+      return `custom(${profile.model || 'model'})`
+    }
+    return `${profile.name} (${profile.model})`
+  }
+
+  const appendCustomLlmFormData = (formData) => {
+    if (!props.requiresApiKey) return
+    const customLlm = getLocalCustomLlmConfig()
+    if (customLlm.baseUrl && customLlm.apiKey && customLlm.model) {
+      formData.append('custom_llm_base_url', customLlm.baseUrl)
+      formData.append('custom_llm_api_key', customLlm.apiKey)
+      formData.append('custom_llm_model', customLlm.model)
+    }
+  }
+
+  const getCustomLlmPayload = () => {
+    if (!props.requiresApiKey) {
+      return {
+        custom_llm_base_url: null,
+        custom_llm_api_key: null,
+        custom_llm_model: null
+      }
+    }
+    const customLlm = getLocalCustomLlmConfig()
+    return {
+      custom_llm_base_url: customLlm.baseUrl || null,
+      custom_llm_api_key: customLlm.apiKey || null,
+      custom_llm_model: customLlm.model || null
     }
   }
 
@@ -660,6 +720,7 @@
           formData.append('api_key', getLocalApiKey())
           const dsKey = getLocalDeepseekApiKey()
           if (dsKey) formData.append('deepseek_api_key', dsKey)
+          appendCustomLlmFormData(formData)
         }
         resp = await fetch('/api/process/upload', {
           method: 'POST',
@@ -695,7 +756,8 @@
             api_key: props.requiresApiKey ? getLocalApiKey() : null,
             deepseek_api_key: props.requiresApiKey
               ? getLocalDeepseekApiKey() || null
-              : null
+              : null,
+            ...getCustomLlmPayload()
           })
         })
       }
@@ -979,7 +1041,7 @@
                       :key="profile.name"
                       :value="profile.name"
                     >
-                      {{ profile.name }} ({{ profile.model }})
+                      {{ formatSummaryProfileLabel(profile) }}
                     </option>
                   </select>
                   <ChevronDown

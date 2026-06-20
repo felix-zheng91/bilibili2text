@@ -1,0 +1,92 @@
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "web-ui"))
+
+from b2t.config import (  # noqa: E402
+    AppConfig,
+    ConverterConfig,
+    DownloadConfig,
+    FancyHtmlConfig,
+    RagConfig,
+    STTConfig,
+    StorageConfig,
+    SummarizeConfig,
+    SummarizeModelProfile,
+    SummaryPresetsConfig,
+)
+from backend.settings import (  # noqa: E402
+    OPEN_PUBLIC_CUSTOM_LLM_PROFILE,
+    build_open_public_config,
+)
+
+
+def _config() -> AppConfig:
+    return AppConfig(
+        download=DownloadConfig(),
+        storage=StorageConfig(),
+        stt=STTConfig(provider="qwen", qwen_model="qwen3-asr-flash-filetrans"),
+        summarize=SummarizeConfig(
+            profile="bailian-main",
+            profiles={
+                "bailian-main": SummarizeModelProfile(
+                    provider="bailian",
+                    model="qwen3-max",
+                    api_key="",
+                    api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    providers=(),
+                ),
+                "deepseek-main": SummarizeModelProfile(
+                    provider="deepseek",
+                    model="deepseek-chat",
+                    api_key="",
+                    api_base="https://api.deepseek.com",
+                    providers=(),
+                ),
+            },
+            preset="default",
+            presets_file="summary_presets.toml",
+        ),
+        fancy_html=FancyHtmlConfig(profile="bailian-main"),
+        summary_presets=SummaryPresetsConfig(
+            default="default",
+            presets={},
+            source_path=Path("summary_presets.toml"),
+        ),
+        converter=ConverterConfig(),
+        rag=RagConfig(),
+    )
+
+
+def test_open_public_custom_llm_adds_default_profile_without_changing_stt() -> None:
+    config = build_open_public_config(
+        _config(),
+        api_key="sk-dashscope",
+        deepseek_api_key="sk-deepseek",
+        custom_llm_base_url="https://llm.example.com/v1/",
+        custom_llm_api_key="sk-custom",
+        custom_llm_model="custom-model",
+    )
+
+    assert config.stt.provider == "qwen"
+    assert config.stt.qwen_api_key == "sk-dashscope"
+    assert config.summarize.profile == OPEN_PUBLIC_CUSTOM_LLM_PROFILE
+    assert config.fancy_html.profile == OPEN_PUBLIC_CUSTOM_LLM_PROFILE
+    assert config.rag.llm_profile == OPEN_PUBLIC_CUSTOM_LLM_PROFILE
+
+    profile = config.summarize.profiles[OPEN_PUBLIC_CUSTOM_LLM_PROFILE]
+    assert profile.provider == "openai_compatible"
+    assert profile.model == "custom-model"
+    assert profile.api_key == "sk-custom"
+    assert profile.api_base == "https://llm.example.com/v1"
+
+
+def test_open_public_without_custom_llm_keeps_existing_deepseek_priority() -> None:
+    config = build_open_public_config(
+        _config(),
+        api_key="sk-dashscope",
+        deepseek_api_key="sk-deepseek",
+    )
+
+    assert config.summarize.profile == "deepseek-main"
+    assert OPEN_PUBLIC_CUSTOM_LLM_PROFILE not in config.summarize.profiles

@@ -35,6 +35,18 @@ class ProcessRequest(BaseModel):
         default=None,
         description="open-public 模式下用户自带的 DeepSeek API Key（可选，用于 LLM/RAG/Fancy HTML）",
     )
+    custom_llm_base_url: str | None = Field(
+        default=None,
+        description="open-public 模式下用户自定义 OpenAI-compatible LLM base_url",
+    )
+    custom_llm_api_key: str | None = Field(
+        default=None,
+        description="open-public 模式下用户自定义 OpenAI-compatible LLM API Key",
+    )
+    custom_llm_model: str | None = Field(
+        default=None,
+        description="open-public 模式下用户自定义 OpenAI-compatible LLM model",
+    )
 
 
 class ProcessStartResponse(BaseModel):
@@ -155,6 +167,17 @@ class OpenPublicApiKeyUpdateRequest(BaseModel):
     )
 
 
+class OpenPublicCustomLlmTestRequest(BaseModel):
+    base_url: str = Field(..., min_length=1, description="OpenAI-compatible base_url")
+    api_key: str = Field(..., min_length=1, description="API Key")
+    model: str = Field(..., min_length=1, description="模型名称")
+
+
+class OpenPublicCustomLlmTestResponse(BaseModel):
+    ok: bool
+    content: str = ""
+
+
 class HistoryItemResponse(BaseModel):
     run_id: str
     bvid: str
@@ -220,6 +243,18 @@ class HistoryRegenerateSummaryRequest(BaseModel):
         default=None,
         description="open-public 模式下用户自带的 DeepSeek API Key（可选，用于 LLM/Fancy HTML）",
     )
+    custom_llm_base_url: str | None = Field(
+        default=None,
+        description="open-public 模式下用户自定义 OpenAI-compatible LLM base_url",
+    )
+    custom_llm_api_key: str | None = Field(
+        default=None,
+        description="open-public 模式下用户自定义 OpenAI-compatible LLM API Key",
+    )
+    custom_llm_model: str | None = Field(
+        default=None,
+        description="open-public 模式下用户自定义 OpenAI-compatible LLM model",
+    )
 
 
 class GenerateFancyHtmlRequest(BaseModel):
@@ -243,6 +278,18 @@ class GenerateFancyHtmlRequest(BaseModel):
     deepseek_api_key: str | None = Field(
         default=None,
         description="open-public 模式下用户自带的 DeepSeek API Key（可选，用于 Fancy HTML）",
+    )
+    custom_llm_base_url: str | None = Field(
+        default=None,
+        description="open-public 模式下用户自定义 OpenAI-compatible LLM base_url",
+    )
+    custom_llm_api_key: str | None = Field(
+        default=None,
+        description="open-public 模式下用户自定义 OpenAI-compatible LLM API Key",
+    )
+    custom_llm_model: str | None = Field(
+        default=None,
+        description="open-public 模式下用户自定义 OpenAI-compatible LLM model",
     )
 
 
