@@ -167,6 +167,19 @@ class OpenPublicApiKeyUpdateRequest(BaseModel):
     )
 
 
+class OpenPublicApiKeyTestRequest(BaseModel):
+    api_key: str = Field(..., min_length=1, description="API Key")
+    provider: Literal["alibaba", "deepseek"] = Field(
+        default="alibaba",
+        description="API Key 对应的服务商",
+    )
+
+
+class OpenPublicApiKeyTestResponse(BaseModel):
+    ok: bool
+    content: str = ""
+
+
 class OpenPublicCustomLlmTestRequest(BaseModel):
     base_url: str = Field(..., min_length=1, description="OpenAI-compatible base_url")
     api_key: str = Field(..., min_length=1, description="API Key")

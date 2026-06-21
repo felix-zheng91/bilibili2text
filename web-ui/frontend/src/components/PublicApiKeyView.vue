@@ -31,6 +31,7 @@
   const aliyunMaskedKey = ref('')
   const aliyunError = ref('')
   const aliyunSuccess = ref('')
+  const isTestingAliyun = ref(false)
 
   // DeepSeek key state
   const deepseekKeyInput = ref('')
@@ -38,6 +39,7 @@
   const deepseekMaskedKey = ref('')
   const deepseekError = ref('')
   const deepseekSuccess = ref('')
+  const isTestingDeepseek = ref(false)
 
   // Custom OpenAI-compatible LLM state
   const customLlmBaseUrlInput = ref('')
@@ -156,6 +158,81 @@
     }
   }
 
+  const getSavedProviderApiKey = (storageKey) => {
+    try {
+      return (window.localStorage.getItem(storageKey) || '').trim()
+    } catch {
+      return ''
+    }
+  }
+
+  const parseApiResponse = async (resp) => {
+    const raw = await resp.text()
+    if (!raw) return null
+    try {
+      return JSON.parse(raw)
+    } catch {
+      throw new Error(`响应不是有效 JSON（HTTP ${resp.status}）`)
+    }
+  }
+
+  const assertSuccessfulTestResponse = (resp, data) => {
+    if (!resp.ok) {
+      const detail = data?.detail || data?.message || `HTTP ${resp.status}`
+      throw new Error(String(detail))
+    }
+    const content = data?.content
+    if (typeof content !== 'string' || !content.trim()) {
+      throw new Error('后端测试接口返回了空响应')
+    }
+  }
+
+  const testProviderConnection = async ({
+    provider,
+    label,
+    inputValue,
+    storageKey,
+    setError,
+    setSuccess,
+    setTesting
+  }) => {
+    const apiKey = inputValue.trim() || getSavedProviderApiKey(storageKey)
+    if (!apiKey) {
+      setError('请输入 API Key，或先保存已有 Key')
+      setSuccess('')
+      return
+    }
+    const validationError = validateKey(apiKey, label)
+    if (validationError) {
+      setError(validationError)
+      setSuccess('')
+      return
+    }
+    setError('')
+    setSuccess('')
+    setTesting(true)
+    try {
+      const resp = await fetch('/api/open-public/api-key/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          provider,
+          api_key: apiKey
+        })
+      })
+      const data = await parseApiResponse(resp)
+      assertSuccessfulTestResponse(resp, data)
+      setSuccess('测试连接成功。')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '测试连接失败'
+      setError(`测试连接失败：${message}`)
+    } finally {
+      setTesting(false)
+    }
+  }
+
   const saveCustomLlm = () => {
     const baseUrl = normalizeBaseUrl(customLlmBaseUrlInput.value)
     const apiKey =
@@ -234,23 +311,8 @@
           model
         })
       })
-      const raw = await resp.text()
-      let data = null
-      if (raw) {
-        try {
-          data = JSON.parse(raw)
-        } catch {
-          throw new Error(`响应不是有效 JSON（HTTP ${resp.status}）`)
-        }
-      }
-      if (!resp.ok) {
-        const detail = data?.detail || data?.message || `HTTP ${resp.status}`
-        throw new Error(String(detail))
-      }
-      const content = data?.content
-      if (typeof content !== 'string' || !content.trim()) {
-        throw new Error('后端测试接口返回了空响应')
-      }
+      const data = await parseApiResponse(resp)
+      assertSuccessfulTestResponse(resp, data)
       customLlmSuccess.value = '测试连接成功。'
     } catch (err) {
       const message = err instanceof Error ? err.message : '测试连接失败'
@@ -259,6 +321,23 @@
       isTestingCustomLlm.value = false
     }
   }
+
+  const testAliyunConnection = () =>
+    testProviderConnection({
+      provider: 'alibaba',
+      label: '阿里云',
+      inputValue: aliyunKeyInput.value,
+      storageKey: LOCAL_API_KEY_KEY,
+      setError: (message) => {
+        aliyunError.value = message
+      },
+      setSuccess: (message) => {
+        aliyunSuccess.value = message
+      },
+      setTesting: (value) => {
+        isTestingAliyun.value = value
+      }
+    })
 
   const saveAliyunKey = () => {
     const apiKey = aliyunKeyInput.value.trim()
@@ -286,6 +365,23 @@
       aliyunError.value = '保存失败，请检查浏览器存储权限'
     }
   }
+
+  const testDeepseekConnection = () =>
+    testProviderConnection({
+      provider: 'deepseek',
+      label: 'DeepSeek',
+      inputValue: deepseekKeyInput.value,
+      storageKey: LOCAL_DEEPSEEK_API_KEY_KEY,
+      setError: (message) => {
+        deepseekError.value = message
+      },
+      setSuccess: (message) => {
+        deepseekSuccess.value = message
+      },
+      setTesting: (value) => {
+        isTestingDeepseek.value = value
+      }
+    })
 
   const clearAliyunKey = () => {
     aliyunError.value = ''
@@ -467,6 +563,14 @@
               <span>{{ aliyunConfigured ? '更新' : '保存' }}</span>
             </button>
             <button
+              class="ghost-button"
+              type="button"
+              :disabled="isTestingAliyun"
+              @click="testAliyunConnection"
+            >
+              <span>{{ isTestingAliyun ? '测试中' : '测试连接' }}</span>
+            </button>
+            <button
               class="clear-button"
               type="button"
               :disabled="!aliyunConfigured"
@@ -539,6 +643,14 @@
           <div class="actions">
             <button class="submit" type="button" @click="saveDeepseekKey">
               <span>{{ deepseekConfigured ? '更新' : '保存' }}</span>
+            </button>
+            <button
+              class="ghost-button"
+              type="button"
+              :disabled="isTestingDeepseek"
+              @click="testDeepseekConnection"
+            >
+              <span>{{ isTestingDeepseek ? '测试中' : '测试连接' }}</span>
             </button>
             <button
               class="clear-button"

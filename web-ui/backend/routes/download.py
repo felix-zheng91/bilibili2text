@@ -21,6 +21,13 @@ from backend.stock_cache import get_or_fetch_stock_statuses
 
 router = APIRouter()
 
+PNG_PAD_VIEWPORT_WIDTH = 834
+PNG_PAD_VIEWPORT_HEIGHT = 1112
+PNG_DESKTOP_DPR = 2
+PNG_MOBILE_VIEWPORT_WIDTH = 430
+PNG_MOBILE_VIEWPORT_HEIGHT = 932
+PNG_MOBILE_DPR = 3
+
 
 def _sibling_storage_key(source_storage_key: str, filename: str) -> str:
     normalized = source_storage_key.replace("\\", "/")
@@ -459,11 +466,15 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
             convert_options = {}
             if target_format == ConversionFormat.PNG and source_suffix in _md_suffixes:
                 if payload.render_mode == "desktop":
-                    convert_options.update(width=1440, height=1080, dpr=2)
+                    convert_options.update(
+                        width=PNG_PAD_VIEWPORT_WIDTH,
+                        height=PNG_PAD_VIEWPORT_HEIGHT,
+                        dpr=PNG_DESKTOP_DPR,
+                    )
                     explicit_output_path = render_source_path.with_name(
                         f"{render_source_path.stem}_desktop.png"
                     )
-                else:
+                elif source_kind == "summary":
                     convert_options["dpr"] = 4
                     explicit_output_path = render_source_path.with_suffix(".png")
             if target_format == ConversionFormat.PNG and source_kind == "summary":
@@ -495,9 +506,9 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                 render_mode = payload.render_mode or "desktop"
                 if render_mode == "mobile":
                     convert_options.update(
-                        width=430,
-                        height=932,
-                        dpr=3,
+                        width=PNG_MOBILE_VIEWPORT_WIDTH,
+                        height=PNG_MOBILE_VIEWPORT_HEIGHT,
+                        dpr=PNG_MOBILE_DPR,
                         is_mobile=True,
                     )
                     explicit_output_path = render_source_path.with_name(
@@ -505,9 +516,9 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                     )
                 else:
                     convert_options.update(
-                        width=1440,
-                        height=1080,
-                        dpr=2,
+                        width=PNG_PAD_VIEWPORT_WIDTH,
+                        height=PNG_PAD_VIEWPORT_HEIGHT,
+                        dpr=PNG_DESKTOP_DPR,
                         is_mobile=False,
                     )
                     explicit_output_path = render_source_path.with_name(
