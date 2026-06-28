@@ -463,16 +463,23 @@
           <!-- LLM profile selector -->
           <div v-if="llmProfiles.length > 0" class="llm-profile-row">
             <label class="llm-profile-label" for="rag-llm-profile">模型</label>
-            <select
-              id="rag-llm-profile"
-              v-model="selectedLlmProfile"
-              class="llm-profile-select"
-              :disabled="isQuerying"
-            >
-              <option v-for="p in llmProfiles" :key="p.name" :value="p.name">
-                {{ formatLlmProfileLabel(p) }}
-              </option>
-            </select>
+            <div class="llm-profile-select-wrap">
+              <select
+                id="rag-llm-profile"
+                v-model="selectedLlmProfile"
+                class="llm-profile-select"
+                :disabled="isQuerying"
+              >
+                <option v-for="p in llmProfiles" :key="p.name" :value="p.name">
+                  {{ formatLlmProfileLabel(p) }}
+                </option>
+              </select>
+              <ChevronDown
+                :size="14"
+                class="llm-profile-select-icon"
+                aria-hidden="true"
+              />
+            </div>
           </div>
         </div>
 
@@ -847,9 +854,9 @@
 
   .textarea-wrap {
     position: relative;
-    border: 1.5px solid var(--panel-border, rgba(148, 163, 184, 0.28));
+    border: 1.5px solid rgba(148, 163, 184, 0.45);
     border-radius: 14px;
-    background: rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.95);
     transition:
       border-color 0.2s,
       box-shadow 0.2s;
@@ -1325,11 +1332,20 @@
     white-space: nowrap;
   }
 
-  .llm-profile-select {
+  .llm-profile-select-wrap {
+    position: relative;
     flex: 1;
     min-width: 0;
-    padding: 6px 10px;
-    border: 1.5px solid var(--panel-border, rgba(148, 163, 184, 0.28));
+  }
+
+  .llm-profile-select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    width: 100%;
+    min-width: 0;
+    padding: 6px 32px 6px 10px;
+    border: 1.5px solid rgba(148, 163, 184, 0.45);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.9);
     color: var(--text-soft, #334155);
@@ -1337,6 +1353,15 @@
     font-family: inherit;
     cursor: pointer;
     transition: border-color 0.18s;
+  }
+
+  .llm-profile-select-icon {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    transform: translateY(-50%);
+    color: #64748b;
+    pointer-events: none;
   }
 
   .llm-profile-select:focus {
@@ -1361,9 +1386,9 @@
     align-items: center;
     gap: 6px;
     padding: 6px 12px;
-    border: 1.5px solid var(--panel-border, rgba(148, 163, 184, 0.28));
+    border: 1.5px solid rgba(148, 163, 184, 0.45);
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.9);
     color: var(--text-soft, #334155);
     font-size: 0.82rem;
     font-weight: 600;

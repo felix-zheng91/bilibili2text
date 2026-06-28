@@ -7,6 +7,7 @@
     ArrowLeft,
     Brain,
     CalendarDays,
+    ChevronDown,
     Clock,
     FileText,
     LoaderCircle,
@@ -751,46 +752,60 @@
           <div class="history-regenerate-grid">
             <div class="summary-preset history-summary-preset">
               <label for="history-summary-profile-select">模型配置</label>
-              <select
-                id="history-summary-profile-select"
-                v-model="selectedHistorySummaryProfile"
-                class="preset-select history-preset-select"
-                :disabled="regenerateLoading || summaryProfiles.length === 0"
-              >
-                <option v-if="summaryProfiles.length === 0" value="">
-                  未获取到模型配置（将使用后端默认）
-                </option>
-                <option
-                  v-for="profile in summaryProfiles"
-                  :key="profile.name"
-                  :value="profile.name"
+              <div class="history-select-wrap">
+                <select
+                  id="history-summary-profile-select"
+                  v-model="selectedHistorySummaryProfile"
+                  class="preset-select history-preset-select"
+                  :disabled="regenerateLoading || summaryProfiles.length === 0"
                 >
-                  {{ formatSummaryProfileLabel(profile) }}
-                </option>
-              </select>
+                  <option v-if="summaryProfiles.length === 0" value="">
+                    未获取到模型配置（将使用后端默认）
+                  </option>
+                  <option
+                    v-for="profile in summaryProfiles"
+                    :key="profile.name"
+                    :value="profile.name"
+                  >
+                    {{ formatSummaryProfileLabel(profile) }}
+                  </option>
+                </select>
+                <ChevronDown
+                  :size="16"
+                  class="history-select-icon"
+                  aria-hidden="true"
+                />
+              </div>
             </div>
 
             <div class="summary-preset history-summary-preset">
               <label for="history-summary-preset-select">总结模板</label>
-              <select
-                id="history-summary-preset-select"
-                v-model="selectedHistorySummaryPreset"
-                class="preset-select history-preset-select"
-                :disabled="
-                  regenerateLoading || historyPresetOptions.length === 0
-                "
-              >
-                <option v-if="historyPresetOptions.length === 0" value="">
-                  未获取到 preset（将使用后端默认）
-                </option>
-                <option
-                  v-for="preset in historyPresetOptions"
-                  :key="preset.name"
-                  :value="preset.name"
+              <div class="history-select-wrap">
+                <select
+                  id="history-summary-preset-select"
+                  v-model="selectedHistorySummaryPreset"
+                  class="preset-select history-preset-select"
+                  :disabled="
+                    regenerateLoading || historyPresetOptions.length === 0
+                  "
                 >
-                  {{ preset.label }}
-                </option>
-              </select>
+                  <option v-if="historyPresetOptions.length === 0" value="">
+                    未获取到 preset（将使用后端默认）
+                  </option>
+                  <option
+                    v-for="preset in historyPresetOptions"
+                    :key="preset.name"
+                    :value="preset.name"
+                  >
+                    {{ preset.label }}
+                  </option>
+                </select>
+                <ChevronDown
+                  :size="16"
+                  class="history-select-icon"
+                  aria-hidden="true"
+                />
+              </div>
             </div>
           </div>
 
@@ -2083,11 +2098,29 @@
   }
 
   .history-preset-select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
     min-height: 46px;
+    padding-right: 42px;
     border-radius: 12px;
     border-color: #cbd5e1;
     background: linear-gradient(145deg, #ffffff, #f8fafc);
     box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
+  }
+
+  .history-select-wrap {
+    position: relative;
+    min-width: 0;
+  }
+
+  .history-select-icon {
+    position: absolute;
+    top: 50%;
+    right: 14px;
+    transform: translateY(-50%);
+    color: #64748b;
+    pointer-events: none;
   }
 
   .history-preset-select:hover:not(:disabled) {
