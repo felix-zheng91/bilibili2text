@@ -61,7 +61,7 @@
   const maskKey = (key) => {
     if (!key) return ''
     if (key.length <= 8) return '*'.repeat(key.length)
-    return `${key.slice(0, 4)}${'*'.repeat(key.length - 8)}${key.slice(-4)}`
+    return `${key.slice(0, 4)}${'*'.repeat(12)}${key.slice(-4)}`
   }
 
   const loadStatus = () => {
