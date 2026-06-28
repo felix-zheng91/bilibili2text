@@ -145,6 +145,7 @@
   })
 
   let pollTimer = null
+  let lastRenderedJobSignature = ''
   const maxPollErrors = 3
   const ACTIVE_JOB_IDS_KEY = 'b2t.active-job-ids'
   const LOCAL_API_KEY_KEY = 'b2t.public-api-key'
@@ -466,6 +467,64 @@
     }
   }
 
+  const getLogSignature = (logs) => {
+    if (!Array.isArray(logs) || logs.length === 0) {
+      return '0::'
+    }
+    return `${logs.length}:${logs.at(-1) || ''}`
+  }
+
+  const getDownloadSignature = (downloads) => {
+    if (!Array.isArray(downloads) || downloads.length === 0) {
+      return ''
+    }
+    return downloads
+      .map((item) =>
+        [
+          item.kind || '',
+          item.url || '',
+          item.filename || '',
+          item.download_url || ''
+        ].join(':')
+      )
+      .join('|')
+  }
+
+  const getJobRenderSignature = (payload) =>
+    [
+      payload.status || '',
+      payload.skip_summary ? '1' : '0',
+      payload.stage || '',
+      payload.stage_label || '',
+      payload.progress ?? '',
+      payload.download_url || '',
+      payload.filename || '',
+      payload.txt_download_url || '',
+      payload.txt_filename || '',
+      payload.summary_download_url || '',
+      payload.summary_filename || '',
+      payload.summary_txt_download_url || '',
+      payload.summary_txt_filename || '',
+      payload.summary_table_pdf_download_url || '',
+      payload.summary_table_pdf_filename || '',
+      payload.summary_preset || '',
+      payload.summary_profile || '',
+      payload.auto_generate_fancy_html ? '1' : '0',
+      payload.fancy_html_status || '',
+      payload.fancy_html_error || '',
+      payload.already_transcribed ? '1' : '0',
+      payload.notice || '',
+      payload.error || '',
+      getDownloadSignature(payload.all_downloads),
+      getLogSignature(payload.logs),
+      payload.author || '',
+      payload.pubdate || '',
+      payload.bvid || '',
+      payload.title || '',
+      payload.is_ephemeral_upload ? '1' : '0',
+      payload.expires_at || ''
+    ].join('\u001f')
+
   const syncLogScroll = () => {
     if (logsViewport.value === null) {
       return
@@ -474,6 +533,7 @@
   }
 
   const resetJob = () => {
+    lastRenderedJobSignature = ''
     job.value = {
       status: 'idle',
       skip_summary: false,
@@ -609,19 +669,24 @@
       const previousLogCount = Array.isArray(job.value.logs)
         ? job.value.logs.length
         : 0
-      job.value = data
-      currentSkipSummary.value = Boolean(data.skip_summary)
-      if (
-        isOpenPublic.value &&
-        typeof data.summary_prompt_template === 'string' &&
-        data.summary_prompt_template.trim()
-      ) {
-        userSummaryPromptTemplate.value = data.summary_prompt_template
+      const nextRenderSignature = getJobRenderSignature(data)
+      const shouldRenderJob = nextRenderSignature !== lastRenderedJobSignature
+      if (shouldRenderJob) {
+        job.value = data
+        lastRenderedJobSignature = nextRenderSignature
+        currentSkipSummary.value = Boolean(data.skip_summary)
+        if (
+          isOpenPublic.value &&
+          typeof data.summary_prompt_template === 'string' &&
+          data.summary_prompt_template.trim()
+        ) {
+          userSummaryPromptTemplate.value = data.summary_prompt_template
+        }
       }
       pollErrorCount.value = 0
       error.value = ''
       const currentLogCount = Array.isArray(data.logs) ? data.logs.length : 0
-      if (currentLogCount !== previousLogCount) {
+      if (shouldRenderJob && currentLogCount !== previousLogCount) {
         nextTick(syncLogScroll)
       }
 
