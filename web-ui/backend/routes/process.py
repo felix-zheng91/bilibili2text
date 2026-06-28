@@ -448,6 +448,7 @@ def process_status(job_id: str) -> ProcessStatusResponse:
         fancy_html_error=job["fancy_html_error"]
         if isinstance(job.get("fancy_html_error"), str)
         else None,
+        used_bilibili_subtitle=bool(job.get("used_bilibili_subtitle")),
         already_transcribed=bool(job.get("already_transcribed")),
         notice=job["notice"] if isinstance(job.get("notice"), str) else None,
         all_downloads=all_downloads,

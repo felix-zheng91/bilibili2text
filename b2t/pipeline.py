@@ -77,6 +77,7 @@ def run_pipeline(
     storage_backend: "StorageBackend | None" = None,
     stt_storage_backend: "StorageBackend | None" = None,
     prefer_bilibili_subtitle: bool = True,
+    bilibili_subtitle_used_callback: Callable[[], None] | None = None,
 ) -> dict[str, StoredArtifact]:
     """Run the full transcription pipeline
 
@@ -198,6 +199,8 @@ def run_pipeline(
         work_dir.mkdir(exist_ok=True)
 
         if audio_file is None:
+            if bilibili_subtitle_used_callback is not None:
+                bilibili_subtitle_used_callback()
             emit_progress("converting", "Generating Markdown", 80)
             logger.info("Work directory: %s", work_dir)
             logger.info("Using Bilibili native subtitle")

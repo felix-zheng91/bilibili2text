@@ -15,7 +15,7 @@ def test_fetch_bilibili_subtitle_parses_cli_json(monkeypatch) -> None:
             cmd,
             0,
             stdout=json.dumps(
-                {"subtitle": {"available": True, "text": "字幕文本"}},
+                {"data": {"subtitle": {"available": True, "text": "字幕文本"}}},
                 ensure_ascii=False,
             ),
             stderr="",
@@ -33,7 +33,7 @@ def test_fetch_bilibili_subtitle_returns_none_when_unavailable(monkeypatch) -> N
         return subprocess.CompletedProcess(
             cmd,
             0,
-            stdout=json.dumps({"subtitle": {"available": False, "text": ""}}),
+            stdout=json.dumps({"data": {"subtitle": {"available": False, "text": ""}}}),
             stderr="",
         )
 
@@ -66,14 +66,22 @@ def test_pipeline_uses_bilibili_subtitle_before_asr(
         ),
     )
 
+    used_callback_calls = 0
+
+    def mark_subtitle_used() -> None:
+        nonlocal used_callback_calls
+        used_callback_calls += 1
+
     results = run_pipeline(
         "BV1ABcsztEcY",
         config,
         skip_summary=True,
         storage_backend=storage,
         stt_storage_backend=storage,
+        bilibili_subtitle_used_callback=mark_subtitle_used,
     )
 
+    assert used_callback_calls == 1
     assert "audio" not in results
     assert {"json", "markdown"} <= results.keys()
 
@@ -115,14 +123,22 @@ def test_pipeline_falls_back_to_asr_when_bilibili_subtitle_missing(
         lambda *args, **kwargs: FakeSttProvider(),
     )
 
+    used_callback_calls = 0
+
+    def mark_subtitle_used() -> None:
+        nonlocal used_callback_calls
+        used_callback_calls += 1
+
     results = run_pipeline(
         "BV1ABcsztEcY",
         config,
         skip_summary=True,
         storage_backend=storage,
         stt_storage_backend=storage,
+        bilibili_subtitle_used_callback=mark_subtitle_used,
     )
 
+    assert used_callback_calls == 0
     assert {"audio", "json", "markdown"} <= results.keys()
     markdown = Path(results["markdown"].storage_key).read_text(encoding="utf-8")
     assert "ASR fallback text" in markdown

@@ -56,6 +56,7 @@ class JobState:
     auto_generate_fancy_html: bool
     fancy_html_status: str
     fancy_html_error: str | None
+    used_bilibili_subtitle: bool
     logs: list[str] = field(default_factory=list)
     stage_started_monotonic: float = field(default_factory=time.monotonic)
     stage_durations_seconds: dict[str, int] = field(
@@ -114,6 +115,7 @@ class JobState:
                 "pending" if auto_generate_fancy_html and not skip_summary else "idle"
             ),
             fancy_html_error=None,
+            used_bilibili_subtitle=False,
         )
 
     def to_payload(self) -> dict[str, JobValue]:
@@ -140,6 +142,7 @@ class JobPatch:
     auto_generate_fancy_html: bool | None = None
     fancy_html_status: str | None = None
     fancy_html_error: str | None = None
+    used_bilibili_subtitle: bool | None = None
     already_transcribed: bool | None = None
     notice: str | None = None
     all_downloads: list[dict[str, str]] | None = None

@@ -59,7 +59,12 @@ def fetch_bilibili_subtitle(
         logger.warning("Failed to parse Bilibili subtitle JSON: %s", exc)
         return None
 
-    subtitle = payload.get("subtitle")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        logger.info("Bilibili subtitle is not available")
+        return None
+
+    subtitle = data.get("subtitle")
     if not isinstance(subtitle, dict) or not subtitle.get("available"):
         logger.info("Bilibili subtitle is not available")
         return None

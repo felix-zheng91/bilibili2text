@@ -105,6 +105,7 @@ class ProcessStatusResponse(BaseModel):
         "idle"
     )
     fancy_html_error: str | None = None
+    used_bilibili_subtitle: bool = False
     already_transcribed: bool = False
     notice: str | None = None
     all_downloads: list[DownloadItemResponse] = Field(default_factory=list)

@@ -72,6 +72,13 @@
     }
     return 'pending'
   }
+
+  const stageLabel = (stage) => {
+    if (stage.key === 'downloading' && props.job.used_bilibili_subtitle) {
+      return '已使用 B 站字幕'
+    }
+    return stage.label
+  }
 </script>
 
 <template>
@@ -100,7 +107,7 @@
         :class="`stage-${stageStatus(stage.key)}`"
       >
         <span class="dot"></span>
-        <span class="stage-name">{{ stage.label }}</span>
+        <span class="stage-name">{{ stageLabel(stage) }}</span>
         <span class="stage-duration">
           {{
             job.stage_durations &&

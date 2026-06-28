@@ -201,6 +201,10 @@ def _run_job(
                         stage_label=label,
                         progress=progress,
                     ),
+                    bilibili_subtitle_used_callback=lambda: _update_job(
+                        job_id,
+                        used_bilibili_subtitle=True,
+                    ),
                 )
             else:
                 results = run_pipeline(
