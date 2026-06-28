@@ -1,0 +1,128 @@
+import json
+import subprocess
+from pathlib import Path
+
+from b2t.config import create_app_config
+from b2t.download.subtitle import BilibiliSubtitle, fetch_bilibili_subtitle
+from b2t.pipeline import run_pipeline
+from b2t.storage.local import LocalStorageBackend
+
+
+def test_fetch_bilibili_subtitle_parses_cli_json(monkeypatch) -> None:
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["bili", "video", "BV1ABcsztEcY", "--subtitle", "--json"]
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps(
+                {"subtitle": {"available": True, "text": "字幕文本"}},
+                ensure_ascii=False,
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("b2t.download.subtitle.subprocess.run", fake_run)
+
+    subtitle = fetch_bilibili_subtitle("BV1ABcsztEcY")
+
+    assert subtitle == BilibiliSubtitle(text="字幕文本")
+
+
+def test_fetch_bilibili_subtitle_returns_none_when_unavailable(monkeypatch) -> None:
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"subtitle": {"available": False, "text": ""}}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("b2t.download.subtitle.subprocess.run", fake_run)
+
+    assert fetch_bilibili_subtitle("BV1ABcsztEcY") is None
+
+
+def test_pipeline_uses_bilibili_subtitle_before_asr(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = create_app_config(output_dir=tmp_path)
+    storage = LocalStorageBackend(tmp_path)
+
+    monkeypatch.setattr(
+        "b2t.pipeline.fetch_bilibili_subtitle",
+        lambda target: BilibiliSubtitle(text="第一句字幕\n\n第二句字幕"),
+    )
+    monkeypatch.setattr("b2t.pipeline.get_video_metadata", lambda bvid: None)
+    monkeypatch.setattr(
+        "b2t.pipeline.download_audio",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("ASR fallback should not download audio")
+        ),
+    )
+    monkeypatch.setattr(
+        "b2t.pipeline.create_stt_provider",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("ASR fallback should not create STT provider")
+        ),
+    )
+
+    results = run_pipeline(
+        "BV1ABcsztEcY",
+        config,
+        skip_summary=True,
+        storage_backend=storage,
+        stt_storage_backend=storage,
+    )
+
+    assert "audio" not in results
+    assert {"json", "markdown"} <= results.keys()
+
+    json_path = Path(results["json"].storage_key)
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["source"] == "bilibili_subtitle"
+    assert payload["text"] == "第一句字幕\n\n第二句字幕"
+
+    markdown = Path(results["markdown"].storage_key).read_text(encoding="utf-8")
+    assert "第一句字幕" in markdown
+    assert "第二句字幕" in markdown
+
+
+def test_pipeline_falls_back_to_asr_when_bilibili_subtitle_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = create_app_config(output_dir=tmp_path)
+    storage = LocalStorageBackend(tmp_path)
+    audio_path = tmp_path / "downloaded.m4a"
+    audio_path.write_bytes(b"audio")
+
+    class FakeSttProvider:
+        def transcribe(self, audio_path, output_dir, progress_callback=None):
+            json_path = output_dir / f"{Path(audio_path).stem}_transcription.json"
+            json_path.write_text(
+                json.dumps({"text": "ASR fallback text"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return json_path
+
+    monkeypatch.setattr("b2t.pipeline.fetch_bilibili_subtitle", lambda target: None)
+    monkeypatch.setattr("b2t.pipeline.get_video_metadata", lambda bvid: None)
+    monkeypatch.setattr(
+        "b2t.pipeline.download_audio",
+        lambda *args, **kwargs: (audio_path, None),
+    )
+    monkeypatch.setattr(
+        "b2t.pipeline.create_stt_provider",
+        lambda *args, **kwargs: FakeSttProvider(),
+    )
+
+    results = run_pipeline(
+        "BV1ABcsztEcY",
+        config,
+        skip_summary=True,
+        storage_backend=storage,
+        stt_storage_backend=storage,
+    )
+
+    assert {"audio", "json", "markdown"} <= results.keys()
+    markdown = Path(results["markdown"].storage_key).read_text(encoding="utf-8")
+    assert "ASR fallback text" in markdown

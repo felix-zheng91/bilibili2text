@@ -4,8 +4,8 @@
 
   const STAGES = [
     { key: 'queued', label: '任务创建' },
-    { key: 'downloading', label: '下载视频音频' },
-    { key: 'transcribing', label: '语音转录' },
+    { key: 'downloading', label: '获取字幕/音频' },
+    { key: 'transcribing', label: '转录/整理文本' },
     { key: 'converting', label: '生成 Markdown' },
     { key: 'summarizing', label: 'LLM 整理总结' },
     { key: 'postprocessing', label: '后处理及文件导出' },

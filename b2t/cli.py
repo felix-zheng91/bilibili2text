@@ -27,6 +27,7 @@ class CLIArgs:
     no_summary: bool = False
     summary_preset: str | None = None
     summary_profile: str | None = None
+    prefer_bilibili_subtitle: bool = True
     verbose: bool = False
 
 
@@ -120,6 +121,11 @@ def _build_script_parser() -> argparse.ArgumentParser:
         default=None,
         help="指定总结模型 profile 名称（默认使用配置中的 summarize.profile）",
     )
+    parser.add_argument(
+        "--no-bilibili-subtitle",
+        action="store_true",
+        help="不优先使用 B 站字幕，直接下载音频并进行 ASR 转录",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="显示详细日志")
     return parser
 
@@ -178,6 +184,7 @@ def _validate_script_args(
         no_summary=bool(parsed.no_summary),
         summary_preset=summary_preset,
         summary_profile=summary_profile,
+        prefer_bilibili_subtitle=not bool(parsed.no_bilibili_subtitle),
         verbose=bool(parsed.verbose),
     )
 
@@ -451,6 +458,7 @@ def _run_pipeline_with_args(args: CLIArgs, console: Console) -> int:
             summary_preset=args.summary_preset,
             summary_profile=args.summary_profile,
             output_dir=args.output,
+            prefer_bilibili_subtitle=args.prefer_bilibili_subtitle,
         )
     except KeyboardInterrupt:
         console.print("[bold #334155]已取消[/bold #334155]")

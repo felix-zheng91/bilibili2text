@@ -101,6 +101,7 @@
   const uploadedAudioFile = ref(null)
   const uploadFileInput = ref(null)
   const enableSummary = ref(true)
+  const preferBilibiliSubtitle = ref(true)
   const autoGenerateFancyHtml = ref(false)
   const currentSkipSummary = ref(false)
   const isStarting = ref(false)
@@ -753,6 +754,7 @@
             auto_generate_fancy_html: skipSummary
               ? false
               : autoGenerateFancyHtml.value,
+            prefer_bilibili_subtitle: preferBilibiliSubtitle.value,
             api_key: props.requiresApiKey ? getLocalApiKey() : null,
             deepseek_api_key: props.requiresApiKey
               ? getLocalDeepseekApiKey() || null
@@ -937,6 +939,17 @@
                 https://b23.tv/2cvz6sn</span
               >
             </div>
+            <label class="switch" for="prefer-bilibili-subtitle">
+              <input
+                id="prefer-bilibili-subtitle"
+                v-model="preferBilibiliSubtitle"
+                type="checkbox"
+              />
+              <span class="switch-track">
+                <span class="switch-thumb"></span>
+              </span>
+              <span class="switch-label">优先使用 B 站字幕</span>
+            </label>
           </template>
 
           <template v-else>

@@ -1,6 +1,7 @@
 """Main pipeline orchestration"""
 
 import logging
+import json
 import shutil
 from pathlib import Path
 import tempfile
@@ -9,6 +10,8 @@ from uuid import uuid4
 
 from b2t.config import AppConfig
 from b2t.converter.json_to_md import convert_json_to_md
+from b2t.download.metadata import get_video_metadata
+from b2t.download.subtitle import fetch_bilibili_subtitle
 from b2t.download.yutto_cli import extract_bvid, normalize_bilibili_target
 from b2t.download.yutto import download_audio
 from b2t.storage import (
@@ -53,6 +56,12 @@ def _ensure_bvid_prefixed_name(name: str, bvid: str) -> str:
     return f"{bvid}_{name}"
 
 
+def _safe_path_name(name: str) -> str:
+    cleaned = "".join("_" if char in '<>:"/\\|?*' else char for char in name)
+    cleaned = cleaned.strip(" .")
+    return cleaned or "untitled"
+
+
 def run_pipeline(
     url: str,
     config: AppConfig,
@@ -67,10 +76,11 @@ def run_pipeline(
     progress_callback: Callable[[str, str, int], None] | None = None,
     storage_backend: "StorageBackend | None" = None,
     stt_storage_backend: "StorageBackend | None" = None,
+    prefer_bilibili_subtitle: bool = True,
 ) -> dict[str, StoredArtifact]:
     """Run the full transcription pipeline
 
-    Pipeline: obtain audio (download or local upload) -> transcribe -> summarize
+    Pipeline: obtain transcript (Bilibili subtitle or ASR) -> Markdown -> summarize
 
     Args:
         url: Bilibili video URL (required when audio_path is None)
@@ -83,10 +93,12 @@ def run_pipeline(
         summary_prompt_template: Optional request-scoped prompt template override
         output_dir: Output root directory, uses config download.output_dir when None
         progress_callback: Stage progress callback with (stage_key, stage_label, progress_percent)
+        prefer_bilibili_subtitle: Try Bilibili native subtitles before downloading
+            audio. Ignored for local uploads.
 
     Returns:
         Storage info for output files from each stage:
-        - "audio": Audio file
+        - "audio": Audio file (only when ASR path is used)
         - "json": Transcription JSON
         - "markdown": Original Markdown
         - "summary": Summary Markdown (excluded when skip_summary is True)
@@ -117,6 +129,7 @@ def run_pipeline(
             Path(audio_path).expanduser().resolve() if audio_path is not None else None
         )
         use_local_audio = normalized_audio_path is not None
+        subtitle = None
         if use_local_audio:
             if not normalized_audio_path.is_file():
                 raise FileNotFoundError(f"上传音频文件不存在: {normalized_audio_path}")
@@ -128,17 +141,36 @@ def run_pipeline(
         else:
             if not url.strip():
                 raise ValueError("URL 不能为空")
-            emit_progress("downloading", "下载视频音频", 10)
-            logger.info("=== 下载音频 ===")
-            audio_file, metadata = download_audio(
-                url, temp_download_dir, config.download.audio_quality
-            )
             normalized_url = normalize_bilibili_target(url)
-            bvid = (
-                input_bvid
-                or extract_bvid(normalized_url)
-                or extract_bvid(audio_file.name)
-            )
+            bvid = input_bvid or extract_bvid(normalized_url)
+            metadata = None
+            if bvid:
+                try:
+                    metadata = get_video_metadata(bvid)
+                except Exception as e:
+                    logger.warning("Failed to fetch video metadata: %s", e)
+
+            if prefer_bilibili_subtitle:
+                emit_progress("downloading", "获取 B 站字幕", 10)
+                logger.info("=== 获取 B 站字幕 ===")
+                subtitle = fetch_bilibili_subtitle(normalized_url)
+            else:
+                subtitle = None
+
+            if subtitle is None:
+                emit_progress("downloading", "下载视频音频", 10)
+                logger.info("=== 下载音频 ===")
+                audio_file, downloaded_metadata = download_audio(
+                    normalized_url,
+                    temp_download_dir,
+                    config.download.audio_quality,
+                    fetch_metadata=metadata is None,
+                )
+                if metadata is None:
+                    metadata = downloaded_metadata
+                bvid = bvid or extract_bvid(audio_file.name)
+            else:
+                audio_file = None
 
         if bvid is None:
             raise ValueError(
@@ -154,26 +186,52 @@ def run_pipeline(
             results["_metadata"] = metadata  # Temporarily store metadata for later use
 
         # Create workflow directory
-        work_dir = transcribe_root / _ensure_bvid_prefixed_name(audio_file.stem, bvid)
+        if audio_file is None:
+            work_dir_name = (
+                f"{bvid}_{_safe_path_name(metadata.title)}"
+                if metadata and metadata.title
+                else bvid
+            )
+        else:
+            work_dir_name = audio_file.stem
+        work_dir = transcribe_root / _ensure_bvid_prefixed_name(work_dir_name, bvid)
         work_dir.mkdir(exist_ok=True)
 
-        # Move audio to work directory
-        audio_filename = _ensure_bvid_prefixed_name(audio_file.name, bvid)
-        new_audio_path = work_dir / audio_filename
-        if use_local_audio:
-            shutil.copy2(str(audio_file), new_audio_path)
+        if audio_file is None:
+            emit_progress("converting", "Generating Markdown", 80)
+            logger.info("Work directory: %s", work_dir)
+            logger.info("Using Bilibili native subtitle")
+            json_path = work_dir / f"{work_dir.name}_transcription.json"
+            json_path.write_text(
+                json.dumps(
+                    {
+                        "text": subtitle.text,
+                        "source": "bilibili_subtitle",
+                        "bvid": bvid,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
         else:
-            shutil.move(str(audio_file), new_audio_path)
-        local_results["audio"] = new_audio_path
-        logger.info("Work directory: %s", work_dir)
+            # Move audio to work directory
+            audio_filename = _ensure_bvid_prefixed_name(audio_file.name, bvid)
+            new_audio_path = work_dir / audio_filename
+            if use_local_audio:
+                shutil.copy2(str(audio_file), new_audio_path)
+            else:
+                shutil.move(str(audio_file), new_audio_path)
+            local_results["audio"] = new_audio_path
+            logger.info("Work directory: %s", work_dir)
 
-        # 2. Transcribe (each provider handles its own details, e.g. Qwen's OSS upload)
-        stt_provider = create_stt_provider(config, stt_storage_backend)
-        json_path = stt_provider.transcribe(
-            new_audio_path,
-            work_dir,
-            progress_callback=emit_progress,
-        )
+            # 2. Transcribe (each provider handles its own details, e.g. Qwen's OSS upload)
+            stt_provider = create_stt_provider(config, stt_storage_backend)
+            json_path = stt_provider.transcribe(
+                new_audio_path,
+                work_dir,
+                progress_callback=emit_progress,
+            )
         local_results["json"] = json_path
 
         # 3. JSON -> Markdown

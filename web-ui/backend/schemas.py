@@ -27,6 +27,10 @@ class ProcessRequest(BaseModel):
         default=False,
         description="总结完成后是否自动异步生成 fancy HTML",
     )
+    prefer_bilibili_subtitle: bool = Field(
+        default=True,
+        description="是否优先使用 B 站原生字幕，失败后回退到音频 ASR",
+    )
     api_key: str | None = Field(
         default=None,
         description="open-public 模式下用户自带的阿里云 DashScope API Key",

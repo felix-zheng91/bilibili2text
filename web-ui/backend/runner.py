@@ -55,6 +55,7 @@ def _run_job(
     summary_profile: str | None,
     summary_prompt_template: str | None,
     auto_generate_fancy_html: bool,
+    prefer_bilibili_subtitle: bool = True,
     ephemeral_upload: bool = False,
     api_key: str | None = None,
     deepseek_api_key: str | None = None,
@@ -192,6 +193,7 @@ def _run_job(
                     summary_prompt_template=summary_prompt_template,
                     storage_backend=storage_backend,
                     stt_storage_backend=stt_storage_backend,
+                    prefer_bilibili_subtitle=False,
                     progress_callback=lambda stage, label, progress: _update_job(
                         job_id,
                         status="running",
@@ -210,6 +212,7 @@ def _run_job(
                     summary_prompt_template=summary_prompt_template,
                     storage_backend=storage_backend,
                     stt_storage_backend=stt_storage_backend,
+                    prefer_bilibili_subtitle=prefer_bilibili_subtitle,
                     progress_callback=lambda stage, label, progress: _update_job(
                         job_id,
                         status="running",
