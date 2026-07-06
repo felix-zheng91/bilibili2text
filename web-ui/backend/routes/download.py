@@ -63,7 +63,7 @@ def _find_precomputed_conversion(
     artifact: StoredArtifact,
     target_format: ConversionFormat,
     source_variant: str | None,
-    render_mode: str | None,
+    render_mode: str | None = None,
 ) -> StoredArtifact | None:
     source_kind = classify_artifact_filename(artifact.filename) or ""
     filename = _precomputed_convert_filename(
