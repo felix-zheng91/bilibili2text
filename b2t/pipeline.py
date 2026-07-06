@@ -8,7 +8,13 @@ import tempfile
 from typing import Callable
 from uuid import uuid4
 
-from b2t.config import AppConfig
+from dataclasses import replace
+
+from b2t.config import (
+    AppConfig,
+    flatten_stt_profile,
+    resolve_stt_profile,
+)
 from b2t.converter.json_to_md import convert_json_to_md
 from b2t.download.metadata import get_video_metadata
 from b2t.download.subtitle import fetch_bilibili_subtitle
@@ -72,6 +78,7 @@ def run_pipeline(
     summary_preset: str | None = None,
     summary_profile: str | None = None,
     summary_prompt_template: str | None = None,
+    stt_profile: str | None = None,
     output_dir: Path | str | None = None,
     progress_callback: Callable[[str, str, int], None] | None = None,
     storage_backend: "StorageBackend | None" = None,
@@ -229,6 +236,12 @@ def run_pipeline(
             logger.info("Work directory: %s", work_dir)
 
             # 2. Transcribe (each provider handles its own details, e.g. Qwen's OSS upload)
+            if stt_profile is not None:
+                resolved_stt = resolve_stt_profile(config.stt, override=stt_profile)
+                config = replace(
+                    config,
+                    stt=flatten_stt_profile(config.stt, resolved_stt, stt_profile),
+                )
             stt_provider = create_stt_provider(config, stt_storage_backend)
             json_path = stt_provider.transcribe(
                 new_audio_path,

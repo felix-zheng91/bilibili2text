@@ -683,6 +683,76 @@ def resolve_summarize_model_profile(
     return profile
 
 
+def resolve_stt_profile(
+    stt: STTConfig,
+    override: str | None = None,
+) -> STTProfile:
+    """Look up an STT profile by name from config.stt.profiles.
+
+    Args:
+        stt: The STT configuration containing a profiles dict.
+        override: Optional profile name to use instead of the default.
+
+    Returns:
+        The requested STTProfile.
+
+    Raises:
+        ValueError: If the profile name is not found.
+    """
+    selected_profile = override or stt.profile
+    selected_profile = selected_profile.strip()
+    profile = stt.profiles.get(selected_profile)
+    if profile is None:
+        available = ", ".join(stt.profiles.keys())
+        raise ValueError(
+            f"stt.profile `{selected_profile}` 不存在，可选值: {available}"
+        )
+    return profile
+
+
+def flatten_stt_profile(
+    stt: STTConfig,
+    profile: STTProfile,
+    profile_name: str,
+) -> STTConfig:
+    """Create a new STTConfig with the selected profile's fields flattened.
+
+    Args:
+        stt: The original STT configuration (preserves profiles dict).
+        profile: The profile whose fields should be flattened to top level.
+        profile_name: The name to record as the active profile.
+
+    Returns:
+        A new STTConfig with top-level fields reflecting the chosen profile.
+    """
+    return STTConfig(
+        profile=profile_name,
+        profiles=stt.profiles,
+        provider=profile.provider,
+        language=profile.language,
+        storage_profile=profile.storage_profile,
+        qwen_api_key=profile.qwen_api_key,
+        qwen_model=profile.qwen_model,
+        qwen_base_url=profile.qwen_base_url,
+        groq_api_key=profile.groq_api_key,
+        groq_model=profile.groq_model,
+        groq_base_url=profile.groq_base_url,
+        groq_chunk_length=profile.groq_chunk_length,
+        groq_overlap=profile.groq_overlap,
+        groq_bitrate=profile.groq_bitrate,
+        volc_api_key=profile.volc_api_key,
+        volc_resource_id=profile.volc_resource_id,
+        volc_submit_url=profile.volc_submit_url,
+        volc_query_url=profile.volc_query_url,
+        volc_enable_itn=profile.volc_enable_itn,
+        volc_enable_punc=profile.volc_enable_punc,
+        volc_enable_ddc=profile.volc_enable_ddc,
+        volc_show_utterances=profile.volc_show_utterances,
+        volc_poll_interval_seconds=profile.volc_poll_interval_seconds,
+        volc_timeout_seconds=profile.volc_timeout_seconds,
+    )
+
+
 def resolve_summarize_api_base(profile: SummarizeModelProfile) -> str:
     api_base = profile.api_base.strip()
     if api_base:
@@ -852,31 +922,10 @@ def _load_stt_config(raw_stt: dict) -> STTConfig:
         available = ", ".join(profiles.keys())
         raise ValueError(f"stt.profile `{profile}` 不存在，可选值: {available}")
 
-    return STTConfig(
-        profile=profile,
-        profiles=profiles,
-        provider=selected_profile.provider,
-        language=selected_profile.language,
-        storage_profile=selected_profile.storage_profile,
-        qwen_api_key=selected_profile.qwen_api_key,
-        qwen_model=selected_profile.qwen_model,
-        qwen_base_url=selected_profile.qwen_base_url,
-        groq_api_key=selected_profile.groq_api_key,
-        groq_model=selected_profile.groq_model,
-        groq_base_url=selected_profile.groq_base_url,
-        groq_chunk_length=selected_profile.groq_chunk_length,
-        groq_overlap=selected_profile.groq_overlap,
-        groq_bitrate=selected_profile.groq_bitrate,
-        volc_api_key=selected_profile.volc_api_key,
-        volc_resource_id=selected_profile.volc_resource_id,
-        volc_submit_url=selected_profile.volc_submit_url,
-        volc_query_url=selected_profile.volc_query_url,
-        volc_enable_itn=selected_profile.volc_enable_itn,
-        volc_enable_punc=selected_profile.volc_enable_punc,
-        volc_enable_ddc=selected_profile.volc_enable_ddc,
-        volc_show_utterances=selected_profile.volc_show_utterances,
-        volc_poll_interval_seconds=selected_profile.volc_poll_interval_seconds,
-        volc_timeout_seconds=selected_profile.volc_timeout_seconds,
+    return flatten_stt_profile(
+        STTConfig(profile=profile, profiles=profiles),
+        selected_profile,
+        profile,
     )
 
 

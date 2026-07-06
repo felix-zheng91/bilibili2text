@@ -24,6 +24,13 @@
   const summaryProfileError = ref('')
   const isLoadingSummaryPresets = ref(false)
   const isLoadingSummaryProfiles = ref(false)
+
+  // ─── STT configuration state ─────────────────────────────────
+  const sttProfiles = ref([])
+  const selectedSttProfile = ref('')
+  const sttProfileError = ref('')
+  const isLoadingSttProfiles = ref(false)
+
   const tabBarRef = ref(null)
   const tabIndicatorStyle = ref({
     width: '0px',
@@ -271,6 +278,40 @@
     }
   }
 
+  const loadSttProfiles = async () => {
+    isLoadingSttProfiles.value = true
+    sttProfileError.value = ''
+    try {
+      const resp = await fetch('/api/stt-profiles')
+      const data = await parseJsonSafely(resp, '获取 STT 配置失败')
+      if (!resp.ok) {
+        throw new Error(pickApiError(resp, data, '获取 STT 配置失败'))
+      }
+      if (!data || typeof data !== 'object') {
+        throw new Error('获取 STT 配置失败（服务返回空响应）')
+      }
+      const profiles = Array.isArray(data.profiles) ? data.profiles : []
+      sttProfiles.value = profiles
+      if (profiles.length === 0) {
+        selectedSttProfile.value = ''
+        return
+      }
+      const fallback = profiles[0].name
+      selectedSttProfile.value =
+        data.selected_profile || data.default_profile || fallback
+    } catch (err) {
+      console.error(err)
+      sttProfiles.value = []
+      selectedSttProfile.value = ''
+      sttProfileError.value =
+        err instanceof Error
+          ? `STT 配置加载失败：${err.message}`
+          : 'STT 配置加载失败，请检查后端服务是否已启动'
+    } finally {
+      isLoadingSttProfiles.value = false
+    }
+  }
+
   // Tab bar indicator animation
   const tabRefs = ref({})
   const setTabRef = (view, el) => {
@@ -309,7 +350,11 @@
     refreshLocalApiKeyStatus()
     void (async () => {
       await loadRuntimeFeatures()
-      await Promise.all([loadSummaryProfiles(), loadSummaryPresets()])
+      await Promise.all([
+        loadSummaryProfiles(),
+        loadSummaryPresets(),
+        loadSttProfiles()
+      ])
       await nextTick()
       updateTabIndicator()
     })()
@@ -399,6 +444,10 @@
         :summary-profile-error="summaryProfileError"
         :is-loading-summary-presets="isLoadingSummaryPresets"
         :is-loading-summary-profiles="isLoadingSummaryProfiles"
+        :stt-profiles="sttProfiles"
+        :selected-stt-profile="selectedSttProfile"
+        :is-loading-stt-profiles="isLoadingSttProfiles"
+        :stt-profile-error="sttProfileError"
         :allow-upload="runtimeFeatures.allow_upload_audio"
         :requires-api-key="runtimeFeatures.requires_user_api_key"
         :api-key-configured="localApiKeyConfigured"
@@ -407,8 +456,10 @@
         :allow-delete="runtimeFeatures.allow_delete"
         @update:selected-summary-preset="selectedSummaryPreset = $event"
         @update:selected-summary-profile="selectedSummaryProfile = $event"
+        @update:selected-stt-profile="selectedSttProfile = $event"
         @load-summary-presets="loadSummaryPresets"
         @load-summary-profiles="loadSummaryProfiles"
+        @load-stt-profiles="loadSttProfiles"
         @api-key-updated="onApiKeyUpdated"
       />
     </RouterView>

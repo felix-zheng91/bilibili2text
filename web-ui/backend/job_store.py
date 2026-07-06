@@ -69,6 +69,7 @@ class JobState:
     pubdate: str | None = None
     bvid: str | None = None
     title: str | None = None
+    stt_profile: str | None = None
     is_ephemeral_upload: bool = False
     expires_at: str | None = None
     ephemeral_artifacts: list[dict[str, str]] = field(default_factory=list)
@@ -82,6 +83,7 @@ class JobState:
         summary_profile: str | None,
         summary_prompt_template: str | None,
         auto_generate_fancy_html: bool,
+        stt_profile: str | None = None,
     ) -> "JobState":
         now = utc_iso()
         return cls(
@@ -111,6 +113,7 @@ class JobState:
             summary_profile=summary_profile,
             summary_prompt_template=summary_prompt_template,
             auto_generate_fancy_html=auto_generate_fancy_html,
+            stt_profile=stt_profile,
             fancy_html_status=(
                 "pending" if auto_generate_fancy_html and not skip_summary else "idle"
             ),
@@ -178,6 +181,7 @@ class JobRepository:
         summary_profile: str | None,
         summary_prompt_template: str | None = None,
         auto_generate_fancy_html: bool,
+        stt_profile: str | None = None,
     ) -> dict[str, JobValue]:
         job = JobState.create(
             skip_summary=skip_summary,
@@ -185,6 +189,7 @@ class JobRepository:
             summary_profile=summary_profile,
             summary_prompt_template=summary_prompt_template,
             auto_generate_fancy_html=auto_generate_fancy_html,
+            stt_profile=stt_profile,
         )
         with self._lock:
             self._jobs[job.job_id] = job

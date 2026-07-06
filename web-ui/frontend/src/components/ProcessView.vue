@@ -66,6 +66,22 @@
       type: Boolean,
       default: false
     },
+    sttProfiles: {
+      type: Array,
+      default: () => []
+    },
+    selectedSttProfile: {
+      type: String,
+      default: ''
+    },
+    isLoadingSttProfiles: {
+      type: Boolean,
+      default: false
+    },
+    sttProfileError: {
+      type: String,
+      default: ''
+    },
     allowUpload: {
       type: Boolean,
       default: true
@@ -91,8 +107,10 @@
   const emit = defineEmits([
     'update:selectedSummaryPreset',
     'update:selectedSummaryProfile',
+    'update:selectedSttProfile',
     'loadSummaryPresets',
-    'loadSummaryProfiles'
+    'loadSummaryProfiles',
+    'loadSttProfiles'
   ])
 
   const url = ref('')
@@ -126,6 +144,7 @@
     summary_table_pdf_filename: '',
     summary_preset: '',
     summary_profile: '',
+    stt_profile: '',
     auto_generate_fancy_html: false,
     fancy_html_status: 'idle',
     fancy_html_error: '',
@@ -367,6 +386,11 @@
     return `${profile.name} (${profile.model})`
   }
 
+  const formatSttProfileLabel = (profile) => {
+    if (!profile) return ''
+    return `${profile.name} (${profile.provider}/${profile.model})`
+  }
+
   const appendCustomLlmFormData = (formData) => {
     if (!props.requiresApiKey) return
     const customLlm = getLocalCustomLlmConfig()
@@ -510,6 +534,7 @@
       payload.summary_table_pdf_filename || '',
       payload.summary_preset || '',
       payload.summary_profile || '',
+      payload.stt_profile || '',
       payload.auto_generate_fancy_html ? '1' : '0',
       payload.fancy_html_status || '',
       payload.fancy_html_error || '',
@@ -791,6 +816,9 @@
           if (dsKey) formData.append('deepseek_api_key', dsKey)
           appendCustomLlmFormData(formData)
         }
+        if (props.selectedSttProfile) {
+          formData.append('stt_profile', props.selectedSttProfile)
+        }
         resp = await fetch('/api/process/upload', {
           method: 'POST',
           body: formData
@@ -823,6 +851,7 @@
               ? false
               : autoGenerateFancyHtml.value,
             prefer_bilibili_subtitle: preferBilibiliSubtitle.value,
+            stt_profile: props.selectedSttProfile || null,
             api_key: props.requiresApiKey ? getLocalApiKey() : null,
             deepseek_api_key: props.requiresApiKey
               ? getLocalDeepseekApiKey() || null
@@ -1007,6 +1036,53 @@
                 https://b23.tv/2cvz6sn</span
               >
             </div>
+            <div class="stt-inline">
+              <label for="stt-profile-select">语音识别引擎</label>
+              <div class="summary-profile-select-wrap">
+                <select
+                  id="stt-profile-select"
+                  :value="selectedSttProfile"
+                  class="preset-select process-preset-select summary-profile-select"
+                  :disabled="isLoadingSttProfiles || sttProfiles.length === 0"
+                  @change="emit('update:selectedSttProfile', $event.target.value)"
+                >
+                  <option v-if="isLoadingSttProfiles" value="">
+                    正在加载语音识别配置...
+                  </option>
+                  <option v-else-if="sttProfiles.length === 0" value="">
+                    未获取到 STT 配置（将使用后端默认）
+                  </option>
+                  <option
+                    v-for="profile in sttProfiles"
+                    :key="profile.name"
+                    :value="profile.name"
+                  >
+                    {{ formatSttProfileLabel(profile) }}
+                  </option>
+                </select>
+                <ChevronDown
+                  :size="16"
+                  class="summary-profile-select-icon"
+                  aria-hidden="true"
+                />
+              </div>
+              <p
+                v-if="sttProfileError"
+                class="preset-hint preset-hint-error"
+              >
+                {{ sttProfileError }}
+                <button
+                  class="preset-retry"
+                  type="button"
+                  @click="emit('loadSttProfiles')"
+                >
+                  重试
+                </button>
+              </p>
+              <p v-else-if="sttProfiles.length === 0" class="preset-hint">
+                暂未连接到后端 STT 配置接口，提交时会使用服务端默认引擎。
+              </p>
+            </div>
             <label class="switch" for="prefer-bilibili-subtitle">
               <input
                 id="prefer-bilibili-subtitle"
@@ -1045,6 +1121,53 @@
               ，例如
               <code>BV1R9i4BoE7H_视频标题.m4a</code>
             </p>
+            <div class="stt-inline">
+              <label for="stt-profile-select-upload">语音识别引擎</label>
+              <div class="summary-profile-select-wrap">
+                <select
+                  id="stt-profile-select-upload"
+                  :value="selectedSttProfile"
+                  class="preset-select process-preset-select summary-profile-select"
+                  :disabled="isLoadingSttProfiles || sttProfiles.length === 0"
+                  @change="emit('update:selectedSttProfile', $event.target.value)"
+                >
+                  <option v-if="isLoadingSttProfiles" value="">
+                    正在加载语音识别配置...
+                  </option>
+                  <option v-else-if="sttProfiles.length === 0" value="">
+                    未获取到 STT 配置（将使用后端默认）
+                  </option>
+                  <option
+                    v-for="profile in sttProfiles"
+                    :key="profile.name"
+                    :value="profile.name"
+                  >
+                    {{ formatSttProfileLabel(profile) }}
+                  </option>
+                </select>
+                <ChevronDown
+                  :size="16"
+                  class="summary-profile-select-icon"
+                  aria-hidden="true"
+                />
+              </div>
+              <p
+                v-if="sttProfileError"
+                class="preset-hint preset-hint-error"
+              >
+                {{ sttProfileError }}
+                <button
+                  class="preset-retry"
+                  type="button"
+                  @click="emit('loadSttProfiles')"
+                >
+                  重试
+                </button>
+              </p>
+              <p v-else-if="sttProfiles.length === 0" class="preset-hint">
+                暂未连接到后端 STT 配置接口，提交时会使用服务端默认引擎。
+              </p>
+            </div>
           </template>
 
           <label class="switch" for="enable-summary">
@@ -1793,6 +1916,27 @@
     transform: translateY(-50%);
     color: #64748b;
     pointer-events: none;
+  }
+
+  .stt-inline {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 360px);
+    align-items: center;
+    column-gap: 14px;
+    row-gap: 6px;
+    margin-bottom: 10px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  }
+
+  .stt-inline label {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: #334155;
+  }
+
+  .stt-inline .preset-hint {
+    grid-column: 2 / 3;
   }
 
   .summary-preset-trigger {

@@ -215,6 +215,7 @@ def process_video(payload: ProcessRequest) -> ProcessStartResponse:
 
     summary_preset = _clean_optional_text(payload.summary_preset)
     summary_profile = _clean_optional_text(payload.summary_profile)
+    stt_profile = _clean_optional_text(payload.stt_profile)
     summary_prompt_template = _clean_optional_prompt_template(
         payload.summary_prompt_template
     )
@@ -234,6 +235,7 @@ def process_video(payload: ProcessRequest) -> ProcessStartResponse:
         summary_profile=summary_profile,
         summary_prompt_template=summary_prompt_template,
         auto_generate_fancy_html=payload.auto_generate_fancy_html,
+        stt_profile=stt_profile,
     )
     submit_job(
         _run_job,
@@ -244,6 +246,7 @@ def process_video(payload: ProcessRequest) -> ProcessStartResponse:
         summary_profile=summary_profile,
         summary_prompt_template=summary_prompt_template,
         auto_generate_fancy_html=payload.auto_generate_fancy_html,
+        stt_profile=stt_profile,
         prefer_bilibili_subtitle=payload.prefer_bilibili_subtitle,
         api_key=_clean_optional_text(payload.api_key),
         deepseek_api_key=_clean_optional_text(payload.deepseek_api_key),
@@ -268,6 +271,7 @@ def process_uploaded_audio(
     custom_llm_base_url: str | None = Form(default=None),
     custom_llm_api_key: str | None = Form(default=None),
     custom_llm_model: str | None = Form(default=None),
+    stt_profile: str | None = Form(default=None),
 ) -> ProcessStartResponse:
     if not is_upload_enabled():
         raise HTTPException(
@@ -294,6 +298,7 @@ def process_uploaded_audio(
         upload_kind = "audio"
     cleaned_summary_preset = _clean_optional_text(summary_preset)
     cleaned_summary_profile = _clean_optional_text(summary_profile)
+    cleaned_stt_profile = _clean_optional_text(stt_profile)
     cleaned_summary_prompt_template = _clean_optional_prompt_template(
         summary_prompt_template
     )
@@ -332,6 +337,7 @@ def process_uploaded_audio(
         summary_profile=cleaned_summary_profile,
         summary_prompt_template=cleaned_summary_prompt_template,
         auto_generate_fancy_html=auto_generate_fancy_html,
+        stt_profile=cleaned_stt_profile,
     )
     job_id = str(job["job_id"])
     input_bvid = f"upload-{job_id}" if open_public else bvid
@@ -347,6 +353,7 @@ def process_uploaded_audio(
         summary_profile=cleaned_summary_profile,
         summary_prompt_template=cleaned_summary_prompt_template,
         auto_generate_fancy_html=auto_generate_fancy_html,
+        stt_profile=cleaned_stt_profile,
         api_key=_clean_optional_text(api_key),
         deepseek_api_key=_clean_optional_text(deepseek_api_key),
         custom_llm_base_url=_clean_optional_text(custom_llm_base_url),
@@ -439,6 +446,9 @@ def process_status(job_id: str) -> ProcessStatusResponse:
         else None,
         summary_profile=job["summary_profile"]
         if isinstance(job["summary_profile"], str)
+        else None,
+        stt_profile=job["stt_profile"]
+        if isinstance(job.get("stt_profile"), str)
         else None,
         summary_prompt_template=job["summary_prompt_template"]
         if isinstance(job.get("summary_prompt_template"), str)

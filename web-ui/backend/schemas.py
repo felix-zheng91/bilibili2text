@@ -23,6 +23,10 @@ class ProcessRequest(BaseModel):
         default=None,
         description="本次请求使用的自定义总结模板，必须包含 {content} 占位符",
     )
+    stt_profile: str | None = Field(
+        default=None,
+        description="STT 语音识别 profile 名称，为空时使用后端默认",
+    )
     auto_generate_fancy_html: bool = Field(
         default=False,
         description="总结完成后是否自动异步生成 fancy HTML",
@@ -99,6 +103,7 @@ class ProcessStatusResponse(BaseModel):
     summary_table_pdf_filename: str | None = None
     summary_preset: str | None = None
     summary_profile: str | None = None
+    stt_profile: str | None = None
     summary_prompt_template: str | None = None
     auto_generate_fancy_html: bool = False
     fancy_html_status: Literal["idle", "pending", "running", "succeeded", "failed"] = (
@@ -145,6 +150,19 @@ class SummaryProfileListResponse(BaseModel):
     default_profile: str
     selected_profile: str
     profiles: list[SummaryProfileItemResponse]
+
+
+class STTProfileItemResponse(BaseModel):
+    name: str
+    provider: str
+    model: str
+    language: str
+
+
+class STTProfileListResponse(BaseModel):
+    default_profile: str
+    selected_profile: str
+    profiles: list[STTProfileItemResponse]
 
 
 class RuntimeFeaturesResponse(BaseModel):

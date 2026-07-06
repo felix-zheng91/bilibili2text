@@ -12,6 +12,7 @@ from b2t.config import (
     STTProfile,
     SummarizeConfig,
     SummarizeModelProfile,
+    flatten_stt_profile,
     load_config,
 )
 
@@ -227,28 +228,41 @@ def build_open_public_config(
     custom_llm_api_key: str = "",
     custom_llm_model: str = "",
 ) -> AppConfig:
-    base_stt_profile = _pick_qwen_stt_profile(config.stt)
-    public_stt_profile = replace(
-        base_stt_profile,
-        provider="qwen",
-        qwen_api_key=api_key,
-        groq_api_key="",
-    )
-    public_stt_config = STTConfig(
-        profile="open_public_qwen",
-        profiles={"open_public_qwen": public_stt_profile},
-        provider="qwen",
-        language=public_stt_profile.language,
-        storage_profile=public_stt_profile.storage_profile,
-        qwen_api_key=api_key,
-        qwen_model=public_stt_profile.qwen_model,
-        qwen_base_url=public_stt_profile.qwen_base_url,
-        groq_api_key="",
-        groq_model=public_stt_profile.groq_model,
-        groq_base_url=public_stt_profile.groq_base_url,
-        groq_chunk_length=public_stt_profile.groq_chunk_length,
-        groq_overlap=public_stt_profile.groq_overlap,
-        groq_bitrate=public_stt_profile.groq_bitrate,
+    # Preserve all admin-configured STT profiles, injecting user API keys
+    # where applicable (qwen profiles use the DashScope key).
+    public_stt_profiles: dict[str, STTProfile] = {}
+    for name, profile in config.stt.profiles.items():
+        provider = profile.provider.strip().lower()
+        if provider == "qwen":
+            public_stt_profiles[name] = replace(profile, qwen_api_key=api_key)
+        elif provider == "groq":
+            # Groq needs its own API key; preserve admin key for now.
+            public_stt_profiles[name] = profile
+        elif provider == "volc":
+            # Volc needs its own API key; preserve admin key for now.
+            public_stt_profiles[name] = profile
+        else:
+            public_stt_profiles[name] = profile
+
+    if not public_stt_profiles:
+        # Fallback: create a default qwen profile.
+        public_stt_profiles["open_public_qwen"] = STTProfile(
+            provider="qwen",
+            qwen_api_key=api_key,
+        )
+
+    selected_stt_profile_name = config.stt.profile
+    if selected_stt_profile_name not in public_stt_profiles:
+        selected_stt_profile_name = next(iter(public_stt_profiles))
+    selected_stt_profile = public_stt_profiles[selected_stt_profile_name]
+
+    public_stt_config = flatten_stt_profile(
+        STTConfig(
+            profile=selected_stt_profile_name,
+            profiles=public_stt_profiles,
+        ),
+        selected_stt_profile,
+        selected_stt_profile_name,
     )
 
     # Build summarize profiles by injecting user API keys into the
