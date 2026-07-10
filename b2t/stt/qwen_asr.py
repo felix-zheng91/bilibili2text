@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_fun_asr_model(model: str) -> bool:
-    return model.strip().lower() == "fun-asr"
+    return "fun-asr" in model.strip().lower()
 
 
 def _safe_get(data: Any, key: str) -> Any:
@@ -107,6 +107,13 @@ class QwenSTTProvider(STTProvider):
                 enable_words=True,
             )
             wait_fn = QwenTranscription.wait
+
+        if task_response.output is None:
+            code = getattr(task_response, "code", "")
+            message = getattr(task_response, "message", "")
+            raise RuntimeError(
+                f"DashScope API 调用失败 (code={code}, message={message})"
+            )
 
         logger.info("Task submitted, task_id: %s", task_response.output.task_id)
         logger.info("Waiting for transcription to complete...")

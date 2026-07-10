@@ -809,6 +809,8 @@
 
   /* ─── Search panel ──────────────────────────────────────────────── */
   .search-panel {
+    position: relative;
+    z-index: 1;
     padding: clamp(20px, 4vw, 36px) clamp(20px, 4vw, 40px);
   }
 

@@ -15,6 +15,9 @@ from b2t.storage.base import StoredArtifact, classify_artifact_filename
 
 _DB_FILENAME = "b2t_history.db"
 _RUN_ID_SUFFIX_PATTERN = re.compile(r"^-[0-9a-f]{8}(?:_|$)", re.IGNORECASE)
+_ALLOWED_SORT_COLUMNS = frozenset(
+    {"created_at", "title", "bvid", "author", "pubdate", "file_count"}
+)
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS transcription_runs (
@@ -333,9 +336,37 @@ class HistoryDB:
         page_size: int = 20,
         search: str = "",
         record_type: str = "",
+        sort_by: str = "",
+        sort_order: str = "desc",
     ) -> HistoryPage:
-        """Paginated listing with optional search on title/bvid/author."""
+        """Paginated listing with optional search on title/bvid/author.
+
+        Args:
+            sort_by: Column to sort by; defaults to ``pubdate`` for transcription
+                records and ``created_at`` for rag_query records.
+            sort_order: ``desc`` (default) or ``asc``.
+        """
         conn = self._conn()
+
+        # ── Resolve sort column ──────────────────────────────────────
+        resolved_sort = sort_by.strip()
+        if not resolved_sort:
+            if record_type.strip() == "rag_query":
+                resolved_sort = "created_at"
+                order_clause = "created_at DESC"
+            else:
+                # transcription: pubdate DESC with fallback to created_at DESC
+                # when pubdate is empty.
+                resolved_sort = "pubdate"
+                order_clause = "pubdate DESC, created_at DESC"
+        else:
+            if resolved_sort not in _ALLOWED_SORT_COLUMNS:
+                raise ValueError(
+                    f"不支持的排序字段: {resolved_sort}，"
+                    f"可选值: {', '.join(sorted(_ALLOWED_SORT_COLUMNS))}"
+                )
+            order_dir = "DESC" if sort_order.strip().lower() != "asc" else "ASC"
+            order_clause = f"{resolved_sort} {order_dir}"
 
         conditions: list[str] = []
         params: list[str] = []
@@ -362,7 +393,7 @@ class HistoryDB:
             SELECT run_id, bvid, title, author, pubdate, created_at, has_summary, file_count, record_type
             FROM transcription_runs
             {where}
-            ORDER BY created_at DESC
+            ORDER BY {order_clause}
             LIMIT ? OFFSET ?
             """,
             [*params, page_size, offset],
