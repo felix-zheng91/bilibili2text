@@ -112,13 +112,15 @@ def get_video_metadata(bvid: str) -> VideoMetadata:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        pass
-    else:
-        raise RuntimeError(
-            "An event loop is already running; use get_video_metadata_async instead."
-        )
-
-    return asyncio.run(get_video_metadata_async(bvid))
+        # 当前线程没有运行中的事件循环，直接使用 asyncio.run()
+        return asyncio.run(get_video_metadata_async(bvid))
+    # 当前线程已有运行中的事件循环（如 ThreadPoolExecutor 中某些库隐式创建了循环），
+    # 改用 new_event_loop + run_until_complete 绕过 asyncio.run() 的校验。
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(get_video_metadata_async(bvid))
+    finally:
+        loop.close()
 
 
 __all__ = [

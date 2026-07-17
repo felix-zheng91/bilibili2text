@@ -12,7 +12,7 @@ from yutto.cli.cli import add_download_arguments
 from yutto.cli.settings import YuttoSettings
 from yutto.download_manager import DownloadManager, DownloadTask
 from yutto.utils.fetcher import FetcherContext
-from yutto.validator import initial_validation, validate_basic_arguments
+from yutto.utils.asynclib import initial_async_policy
 
 from b2t.download.metadata import VideoMetadata, get_video_metadata_async
 from b2t.download.yutto_cli import extract_bvid, normalize_bilibili_target
@@ -124,8 +124,11 @@ async def download_audio_minimal_async(
     manager = DownloadManager()
 
     try:
-        initial_validation(ctx, args)
-        validate_basic_arguments(args)
+        # 仅初始化异步策略（Windows 上的 ProactorEventLoop），
+        # 跳过 initial_validation/validate_basic_arguments：
+        # 它们是 yutto CLI 的校验逻辑，内部会调用 asyncio.run()，
+        # 在库调用场景下会导致嵌套事件循环错误。
+        initial_async_policy()
         manager.start(ctx)
         await manager.add_task(DownloadTask(args=args))
         await manager.add_stop_task()
@@ -159,20 +162,30 @@ def download_audio_minimal(
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        pass
-    else:
-        raise RuntimeError(
-            "An event loop is already running; use download_audio_minimal_async instead."
+        # 当前线程没有运行中的事件循环，直接使用 asyncio.run()
+        return asyncio.run(
+            download_audio_minimal_async(
+                url,
+                output_dir=output_dir,
+                overwrite=overwrite,
+                audio_quality=audio_quality,
+                fetch_metadata=fetch_metadata,
+            )
         )
-    return asyncio.run(
-        download_audio_minimal_async(
-            url,
-            output_dir=output_dir,
-            overwrite=overwrite,
-            audio_quality=audio_quality,
-            fetch_metadata=fetch_metadata,
+    # 当前线程已有运行中的事件循环，改用 new_event_loop + run_until_complete
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            download_audio_minimal_async(
+                url,
+                output_dir=output_dir,
+                overwrite=overwrite,
+                audio_quality=audio_quality,
+                fetch_metadata=fetch_metadata,
+            )
         )
-    )
+    finally:
+        loop.close()
 
 
 def download_audio(
