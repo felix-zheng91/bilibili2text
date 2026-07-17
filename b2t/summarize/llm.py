@@ -26,6 +26,7 @@ from b2t.summary_context import (
 
 logger = logging.getLogger(__name__)
 
+CUSTOM_SUMMARY_PRESET_VALUE = "__user_custom__"
 TABLE_ROW_RE = re.compile(r"^\s*\|?.*\|.*\|?\s*$")
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _BVID_PREFIX_RE = re.compile(r"^(BV[0-9A-Za-z]{10})[_-]?", re.IGNORECASE)
@@ -263,16 +264,23 @@ def summarize(
     md_path = Path(md_path)
     content = md_path.read_text(encoding="utf-8")
 
-    preset_name = resolve_summary_preset_name(
-        summarize=config,
-        summary_presets=summary_presets,
-        override=preset,
-    )
-    template = (
-        validate_summary_prompt_template(prompt_template_override)
-        if prompt_template_override is not None
-        else summary_presets.presets[preset_name].prompt_template
-    )
+    cleaned_preset = (preset or "").strip() or None
+    if cleaned_preset == CUSTOM_SUMMARY_PRESET_VALUE:
+        if prompt_template_override is None:
+            raise ValueError("用户自定义总结模板不能为空")
+        preset_name = CUSTOM_SUMMARY_PRESET_VALUE
+        template = validate_summary_prompt_template(prompt_template_override)
+    else:
+        preset_name = resolve_summary_preset_name(
+            summarize=config,
+            summary_presets=summary_presets,
+            override=cleaned_preset,
+        )
+        template = (
+            validate_summary_prompt_template(prompt_template_override)
+            if prompt_template_override is not None
+            else summary_presets.presets[preset_name].prompt_template
+        )
     resolved_context = resolve_author_summary_context(summary_context_config, metadata)
     context_block = render_summary_context_block(resolved_context)
     prompt_content = content
