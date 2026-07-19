@@ -15,6 +15,7 @@ from b2t.storage.base import StoredArtifact, classify_artifact_filename
 
 _DB_FILENAME = "b2t_history.db"
 _RUN_ID_SUFFIX_PATTERN = re.compile(r"^-[0-9a-f]{8}(?:_|$)", re.IGNORECASE)
+_MULTIPART_TITLE_PATTERN = re.compile(r"^p([1-9][0-9]*)_(.+)$", re.IGNORECASE)
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS transcription_runs (
@@ -730,6 +731,11 @@ def infer_title(filename: str, *, bvid: str) -> str:
     remainder = _RUN_ID_SUFFIX_PATTERN.sub("", remainder)
     if remainder.startswith("_"):
         remainder = remainder[1:]
+
+    multipart_match = _MULTIPART_TITLE_PATTERN.match(remainder)
+    if multipart_match:
+        page, title = multipart_match.groups()
+        return f"{title}_P{page}"
 
     return remainder if remainder else bvid
 
