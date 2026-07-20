@@ -949,7 +949,10 @@
     <section class="layout">
       <article class="panel panel-main">
         <header class="header">
-          <h1>bilibili-to-text</h1>
+          <h1 class="brand">
+            <img src="/favicon.svg" class="brand-logo" alt="" />
+            闻录
+          </h1>
           <p>
             {{
               allowUpload
@@ -1583,6 +1586,18 @@
     font-weight: 800;
     line-height: 1.1;
     letter-spacing: -0.04em;
+  }
+
+  .header .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .header .brand-logo {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
   }
 
   .header p {

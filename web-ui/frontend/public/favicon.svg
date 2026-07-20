@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+
+  <!-- 对勾 ✓ -->
+  <polyline
+    points="40,90 75,125 160,40"
+    stroke="#4A6CF7"
+    stroke-width="14"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    fill="none"
+  />
+
+  <!-- 三道声波线 -->
+  <path d="M 20,130 Q 35,110 50,130" stroke="#4A6CF7" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M 55,155 Q 75,130 95,155" stroke="#4A6CF7" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M 100,180 Q 125,150 150,180" stroke="#4A6CF7" stroke-width="5" stroke-linecap="round" fill="none"/>
+
+</svg>
