@@ -1,11 +1,20 @@
 <script setup>
-  import { ref, computed, onMounted } from 'vue'
+  import {
+    ref,
+    computed,
+    onMounted,
+    onBeforeUnmount,
+    watch,
+    nextTick
+  } from 'vue'
   import { useConversion } from '../composables/useConversion'
   import { renderMarkdown } from '../utils/markdown'
+  import CustomSelect from './CustomSelect.vue'
   import {
     AlertCircle,
     BookMarked,
     Brain,
+    CalendarDays,
     ChevronDown,
     Database,
     Download,
@@ -140,8 +149,33 @@
   // ─── Author filter ────────────────────────────────────────────────
   const authorList = ref([])
   const selectedAuthors = ref([])
+  const authorFilterContainer = ref(null)
   const showAuthorFilter = ref(false)
   const authorsLoaded = ref(false)
+
+  // Click-outside handling for author filter
+  const onOutsideMousedown = (e) => {
+    if (
+      authorFilterContainer.value &&
+      !authorFilterContainer.value.contains(e.target)
+    ) {
+      showAuthorFilter.value = false
+    }
+  }
+
+  watch(showAuthorFilter, (open) => {
+    nextTick(() => {
+      if (open) {
+        document.addEventListener('mousedown', onOutsideMousedown)
+      } else {
+        document.removeEventListener('mousedown', onOutsideMousedown)
+      }
+    })
+  })
+
+  onBeforeUnmount(() => {
+    document.removeEventListener('mousedown', onOutsideMousedown)
+  })
 
   const filterLabel = computed(() =>
     selectedAuthors.value.length === 0
@@ -418,7 +452,7 @@
         </div>
         <div class="filters-row">
           <!-- Author filter -->
-          <div class="author-filter">
+          <div ref="authorFilterContainer" class="author-filter">
             <button class="author-filter-toggle" @click="toggleAuthorFilter">
               <Users :size="13" />
               <span>{{ filterLabel }}</span>
@@ -464,20 +498,17 @@
           <div v-if="llmProfiles.length > 0" class="llm-profile-row">
             <label class="llm-profile-label" for="rag-llm-profile">模型</label>
             <div class="llm-profile-select-wrap">
-              <select
+              <CustomSelect
                 id="rag-llm-profile"
                 v-model="selectedLlmProfile"
-                class="llm-profile-select"
+                :options="
+                  llmProfiles.map((p) => ({
+                    value: p.name,
+                    label: formatLlmProfileLabel(p)
+                  }))
+                "
                 :disabled="isQuerying"
-              >
-                <option v-for="p in llmProfiles" :key="p.name" :value="p.name">
-                  {{ formatLlmProfileLabel(p) }}
-                </option>
-              </select>
-              <ChevronDown
-                :size="14"
-                class="llm-profile-select-icon"
-                aria-hidden="true"
+                class="llm-profile-select-custom"
               />
             </div>
           </div>
@@ -634,6 +665,12 @@
               >
                 {{ scorePercent(src.score) }}%
               </div>
+            </div>
+            <div class="source-info">
+              <span v-if="src.pubdate" class="source-pubdate">
+                <CalendarDays :size="11" />
+                {{ src.pubdate }}
+              </span>
             </div>
             <div class="score-bar-track">
               <div
@@ -1302,6 +1339,21 @@
     height: 100%;
     border-radius: 99px;
     transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .source-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .source-pubdate {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.76rem;
+    color: var(--text-muted, #64748b);
   }
 
   .source-excerpt {

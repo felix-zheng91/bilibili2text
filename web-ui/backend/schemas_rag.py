@@ -20,6 +20,7 @@ class RagSourceItem(BaseModel):
     bvid: str
     text: str
     score: float
+    pubdate: str = ""
 
 
 class RagQueryResponse(BaseModel):

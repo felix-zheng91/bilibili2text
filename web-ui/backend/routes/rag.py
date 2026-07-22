@@ -173,13 +173,21 @@ def _rag_query_stream_impl(
                 meta = result.get("metadata") or {}
                 distance = result.get("distance", 1.0)
                 score = max(0.0, 1.0 - float(distance))
+                run_id = str(meta.get("run_id", ""))
+                # 从 history_db 查询发布时间
+                pubdate = ""
+                if run_id:
+                    detail = history_db.get_run_detail(run_id)
+                    if detail is not None:
+                        pubdate = detail.pubdate or ""
                 sources.append(
                     {
-                        "run_id": str(meta.get("run_id", "")),
+                        "run_id": run_id,
                         "title": str(meta.get("title", "")),
                         "bvid": str(meta.get("bvid", "")),
                         "text": result.get("document", "")[:500],
                         "score": score,
+                        "pubdate": pubdate,
                     }
                 )
                 chunk_texts.append(result.get("document", ""))
@@ -230,16 +238,21 @@ def _rag_query_stream_impl(
 
             if sources:
                 source_rows = [
-                    "| 编号 | 标题 | BV号 | 相关度 |",
-                    "| --- | --- | --- | --- |",
+                    "| 编号 | 标题 | BV号 | 相关度 | 发布时间 |",
+                    "| --- | --- | --- | --- | --- |",
                 ]
                 for i, source in enumerate(sources, 1):
+                    pubdate_cell = (
+                        _escape_markdown_table_cell(source.get("pubdate", ""))
+                        or "-"
+                    )
                     source_rows.append(
                         "| "
                         f"{i} | "
                         f"{_escape_markdown_table_cell(source['title'] or source['bvid'] or '未知')} | "
                         f"{_escape_markdown_table_cell(source['bvid'] or '-')} | "
-                        f"{round(source['score'] * 100)}% |"
+                        f"{round(source['score'] * 100)}% | "
+                        f"{pubdate_cell} |"
                     )
                 sources_md = "\n".join(source_rows)
             else:
@@ -329,6 +342,7 @@ def rag_query(request: RagQueryRequest) -> RagQueryResponse:
         custom_llm_model=(request.custom_llm_model or "").strip(),
     )
     store = get_rag_store()
+    history_db = get_history_db()
 
     try:
         from b2t.rag.retriever import retrieve_and_answer
@@ -342,16 +356,23 @@ def rag_query(request: RagQueryRequest) -> RagQueryResponse:
         logger.error("RAG 查询失败: %s", exc)
         raise HTTPException(status_code=500, detail=f"查询失败: {exc}") from exc
 
-    sources = [
-        RagSourceItem(
-            run_id=src.run_id,
-            title=src.title,
-            bvid=src.bvid,
-            text=src.text[:500],
-            score=src.score,
+    sources = []
+    for src in result.sources:
+        pubdate = ""
+        if src.run_id:
+            detail = history_db.get_run_detail(src.run_id)
+            if detail is not None:
+                pubdate = detail.pubdate or ""
+        sources.append(
+            RagSourceItem(
+                run_id=src.run_id,
+                title=src.title,
+                bvid=src.bvid,
+                text=src.text[:500],
+                score=src.score,
+                pubdate=pubdate,
+            )
         )
-        for src in result.sources
-    ]
     return RagQueryResponse(
         answer=result.answer,
         sources=sources,

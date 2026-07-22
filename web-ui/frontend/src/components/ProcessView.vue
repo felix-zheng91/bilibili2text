@@ -1,4 +1,5 @@
 <script setup>
+  import CustomSelect from './CustomSelect.vue'
   import {
     computed,
     nextTick,
@@ -1042,37 +1043,30 @@
             <div class="stt-inline">
               <label for="stt-profile-select">语音识别引擎</label>
               <div class="summary-profile-select-wrap">
-                <select
+                <CustomSelect
                   id="stt-profile-select"
-                  :value="selectedSttProfile"
-                  class="preset-select process-preset-select summary-profile-select"
+                  :model-value="selectedSttProfile"
+                  @update:model-value="
+                    emit('update:selectedSttProfile', $event)
+                  "
+                  :options="
+                    sttProfiles.map((p) => ({
+                      value: p.name,
+                      label: formatSttProfileLabel(p)
+                    }))
+                  "
+                  :placeholder="
+                    isLoadingSttProfiles
+                      ? '正在加载语音识别配置...'
+                      : sttProfiles.length === 0
+                        ? '未获取到 STT 配置（将使用后端默认）'
+                        : ''
+                  "
                   :disabled="isLoadingSttProfiles || sttProfiles.length === 0"
-                  @change="emit('update:selectedSttProfile', $event.target.value)"
-                >
-                  <option v-if="isLoadingSttProfiles" value="">
-                    正在加载语音识别配置...
-                  </option>
-                  <option v-else-if="sttProfiles.length === 0" value="">
-                    未获取到 STT 配置（将使用后端默认）
-                  </option>
-                  <option
-                    v-for="profile in sttProfiles"
-                    :key="profile.name"
-                    :value="profile.name"
-                  >
-                    {{ formatSttProfileLabel(profile) }}
-                  </option>
-                </select>
-                <ChevronDown
-                  :size="16"
-                  class="summary-profile-select-icon"
-                  aria-hidden="true"
+                  class="preset-select-custom"
                 />
               </div>
-              <p
-                v-if="sttProfileError"
-                class="preset-hint preset-hint-error"
-              >
+              <p v-if="sttProfileError" class="preset-hint preset-hint-error">
                 {{ sttProfileError }}
                 <button
                   class="preset-retry"
@@ -1127,37 +1121,30 @@
             <div class="stt-inline">
               <label for="stt-profile-select-upload">语音识别引擎</label>
               <div class="summary-profile-select-wrap">
-                <select
+                <CustomSelect
                   id="stt-profile-select-upload"
-                  :value="selectedSttProfile"
-                  class="preset-select process-preset-select summary-profile-select"
+                  :model-value="selectedSttProfile"
+                  @update:model-value="
+                    emit('update:selectedSttProfile', $event)
+                  "
+                  :options="
+                    sttProfiles.map((p) => ({
+                      value: p.name,
+                      label: formatSttProfileLabel(p)
+                    }))
+                  "
+                  :placeholder="
+                    isLoadingSttProfiles
+                      ? '正在加载语音识别配置...'
+                      : sttProfiles.length === 0
+                        ? '未获取到 STT 配置（将使用后端默认）'
+                        : ''
+                  "
                   :disabled="isLoadingSttProfiles || sttProfiles.length === 0"
-                  @change="emit('update:selectedSttProfile', $event.target.value)"
-                >
-                  <option v-if="isLoadingSttProfiles" value="">
-                    正在加载语音识别配置...
-                  </option>
-                  <option v-else-if="sttProfiles.length === 0" value="">
-                    未获取到 STT 配置（将使用后端默认）
-                  </option>
-                  <option
-                    v-for="profile in sttProfiles"
-                    :key="profile.name"
-                    :value="profile.name"
-                  >
-                    {{ formatSttProfileLabel(profile) }}
-                  </option>
-                </select>
-                <ChevronDown
-                  :size="16"
-                  class="summary-profile-select-icon"
-                  aria-hidden="true"
+                  class="preset-select-custom"
                 />
               </div>
-              <p
-                v-if="sttProfileError"
-                class="preset-hint preset-hint-error"
-              >
+              <p v-if="sttProfileError" class="preset-hint preset-hint-error">
                 {{ sttProfileError }}
                 <button
                   class="preset-retry"
@@ -1226,35 +1213,29 @@
               >
                 <label for="summary-profile-select">模型配置</label>
                 <div class="summary-profile-select-wrap">
-                  <select
+                  <CustomSelect
                     id="summary-profile-select"
-                    :value="selectedSummaryProfile"
-                    class="preset-select process-preset-select summary-profile-select"
+                    :model-value="selectedSummaryProfile"
+                    @update:model-value="
+                      emit('update:selectedSummaryProfile', $event)
+                    "
+                    :options="
+                      summaryProfiles.map((p) => ({
+                        value: p.name,
+                        label: formatSummaryProfileLabel(p)
+                      }))
+                    "
+                    :placeholder="
+                      isLoadingSummaryProfiles
+                        ? '正在加载模型配置...'
+                        : summaryProfiles.length === 0
+                          ? '未获取到模型配置（将使用后端默认）'
+                          : ''
+                    "
                     :disabled="
                       isLoadingSummaryProfiles || summaryProfiles.length === 0
                     "
-                    @change="
-                      emit('update:selectedSummaryProfile', $event.target.value)
-                    "
-                  >
-                    <option v-if="isLoadingSummaryProfiles" value="">
-                      正在加载模型配置...
-                    </option>
-                    <option v-else-if="summaryProfiles.length === 0" value="">
-                      未获取到模型配置（将使用后端默认）
-                    </option>
-                    <option
-                      v-for="profile in summaryProfiles"
-                      :key="profile.name"
-                      :value="profile.name"
-                    >
-                      {{ formatSummaryProfileLabel(profile) }}
-                    </option>
-                  </select>
-                  <ChevronDown
-                    :size="16"
-                    class="summary-profile-select-icon"
-                    aria-hidden="true"
+                    class="preset-select-custom"
                   />
                 </div>
                 <p
@@ -1903,6 +1884,7 @@
   }
 
   .process-preset-select {
+    border-radius: 8px;
     min-height: 42px;
     padding-inline: 14px;
     font-size: 0.9rem;

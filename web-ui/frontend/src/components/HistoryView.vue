@@ -2,6 +2,7 @@
   import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
   import { useRoute, useRouter } from 'vue-router'
   import { BookMarked, ExternalLink } from 'lucide-vue-next'
+  import CustomSelect from './CustomSelect.vue'
   import {
     AlertCircle,
     ArrowLeft,
@@ -753,27 +754,22 @@
             <div class="summary-preset history-summary-preset">
               <label for="history-summary-profile-select">模型配置</label>
               <div class="history-select-wrap">
-                <select
+                <CustomSelect
                   id="history-summary-profile-select"
                   v-model="selectedHistorySummaryProfile"
-                  class="preset-select history-preset-select"
+                  :options="
+                    summaryProfiles.map((p) => ({
+                      value: p.name,
+                      label: formatSummaryProfileLabel(p)
+                    }))
+                  "
+                  :placeholder="
+                    summaryProfiles.length === 0
+                      ? '未获取到模型配置（将使用后端默认）'
+                      : ''
+                  "
                   :disabled="regenerateLoading || summaryProfiles.length === 0"
-                >
-                  <option v-if="summaryProfiles.length === 0" value="">
-                    未获取到模型配置（将使用后端默认）
-                  </option>
-                  <option
-                    v-for="profile in summaryProfiles"
-                    :key="profile.name"
-                    :value="profile.name"
-                  >
-                    {{ formatSummaryProfileLabel(profile) }}
-                  </option>
-                </select>
-                <ChevronDown
-                  :size="16"
-                  class="history-select-icon"
-                  aria-hidden="true"
+                  class="preset-select-custom"
                 />
               </div>
             </div>
@@ -781,29 +777,24 @@
             <div class="summary-preset history-summary-preset">
               <label for="history-summary-preset-select">总结模板</label>
               <div class="history-select-wrap">
-                <select
+                <CustomSelect
                   id="history-summary-preset-select"
                   v-model="selectedHistorySummaryPreset"
-                  class="preset-select history-preset-select"
+                  :options="
+                    historyPresetOptions.map((p) => ({
+                      value: p.name,
+                      label: p.label
+                    }))
+                  "
+                  :placeholder="
+                    historyPresetOptions.length === 0
+                      ? '未获取到 preset（将使用后端默认）'
+                      : ''
+                  "
                   :disabled="
                     regenerateLoading || historyPresetOptions.length === 0
                   "
-                >
-                  <option v-if="historyPresetOptions.length === 0" value="">
-                    未获取到 preset（将使用后端默认）
-                  </option>
-                  <option
-                    v-for="preset in historyPresetOptions"
-                    :key="preset.name"
-                    :value="preset.name"
-                  >
-                    {{ preset.label }}
-                  </option>
-                </select>
-                <ChevronDown
-                  :size="16"
-                  class="history-select-icon"
-                  aria-hidden="true"
+                  class="preset-select-custom"
                 />
               </div>
             </div>
@@ -931,6 +922,12 @@
                     </span>
                   </div>
                   <div class="rag-history-source-score">{{ item.score }}%</div>
+                </div>
+                <div class="rag-history-source-info">
+                  <span v-if="item.pubdate" class="rag-history-source-pubdate">
+                    <CalendarDays :size="11" />
+                    {{ item.pubdate }}
+                  </span>
                 </div>
                 <p class="rag-history-source-excerpt">{{ item.text }}</p>
               </a>
@@ -1946,6 +1943,21 @@
     font-size: 0.74rem;
     font-weight: 700;
     flex-shrink: 0;
+  }
+
+  .rag-history-source-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .rag-history-source-pubdate {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.76rem;
+    color: var(--text-muted, #64748b);
   }
 
   .rag-history-source-excerpt {

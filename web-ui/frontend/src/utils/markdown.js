@@ -63,13 +63,14 @@ export function extractRagReferenceItems(markdown) {
       .filter((line) => line.includes('|'))
       .map((line) => {
         const cells = splitTableRow(line)
-        const [index, title, bvid, score, text = ''] = cells
+        const [index, title, bvid, score, text = '', pubdate = ''] = cells
         return {
           index: Number(index) || 0,
           title: title || '',
           bvid: bvid && bvid !== '-' ? bvid : '',
           score: Number(String(score || '').replace('%', '')) || 0,
-          text: (text || '').replace(/<br\s*\/?>/gi, '\n').trim()
+          text: (text || '').replace(/<br\s*\/?>/gi, '\n').trim(),
+          pubdate: (pubdate || '').trim()
         }
       })
       .filter((item) => item.index > 0)
