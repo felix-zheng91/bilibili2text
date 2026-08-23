@@ -11,6 +11,9 @@ RUN bun run build
 
 FROM python:3.12-slim AS backend
 
+ARG APP_UID=1000
+ARG APP_GID=1000
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
@@ -30,10 +33,15 @@ RUN uv run playwright install --with-deps chromium
 
 COPY web-ui/ ./web-ui/
 
-RUN useradd --create-home --uid 10001 appuser \
-    && chown -R appuser:appuser /app /ms-playwright
+RUN if ! getent group "${APP_GID}" >/dev/null; then groupadd --gid "${APP_GID}" appuser; fi \
+    && if ! getent passwd "${APP_UID}" >/dev/null; then useradd --create-home --home-dir /home/appuser --uid "${APP_UID}" --gid "${APP_GID}" appuser; fi \
+    && install -d --mode 0755 --owner "${APP_UID}" --group "${APP_GID}" /home/appuser \
+    && install -d --mode 0700 --owner "${APP_UID}" --group "${APP_GID}" /home/appuser/.config/yutto \
+    && chown -R "${APP_UID}:${APP_GID}" /app /ms-playwright
 
-USER appuser
+ENV HOME=/home/appuser
+
+USER ${APP_UID}:${APP_GID}
 
 EXPOSE 8000
 

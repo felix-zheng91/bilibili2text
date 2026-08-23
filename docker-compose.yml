@@ -4,21 +4,53 @@ services:
     build:
       context: .
       target: backend
+      args:
+        APP_UID: ${B2T_UID:-1000}
+        APP_GID: ${B2T_GID:-1000}
     environment:
       B2T_WEB_UI_MODE: ${B2T_WEB_UI_MODE:-default}
       TZ: ${B2T_TIMEZONE:-Asia/Shanghai}
-    user: "10001:10001"
+    user: "${B2T_UID:-1000}:${B2T_GID:-1000}"
     expose:
       - "8000"
     volumes:
-      - ${B2T_CONFIG_PATH:-./config.toml}:/app/config.toml:ro
-      - ${B2T_SUMMARY_PRESETS_PATH:-./summary_presets.toml}:/app/summary_presets.toml:ro
-      - ${B2T_CONTEXT_PATH:-./context.toml}:/app/context.toml:ro
-      - ${B2T_TRANSCRIPTIONS_DIR:-./transcriptions}:/app/transcriptions
-      - ${B2T_DB_DIR:-./db_data}:/app/db_data
-      - ${B2T_CHROMA_DIR:-./chroma_data}:/app/chroma_data
-      # yutto 登录态（auth.toml），可写挂载以便在容器内 yutto auth login 刷新
-      - ${B2T_AUTH_FILE:-C:/Users/Felix/AppData/Roaming/yutto/auth.toml}:/home/appuser/.config/yutto/auth.toml
+      - type: bind
+        source: ${B2T_CONFIG_PATH:-./config.toml}
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${B2T_SUMMARY_PRESETS_PATH:-./summary_presets.toml}
+        target: /app/summary_presets.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${B2T_CONTEXT_PATH:-./context.toml}
+        target: /app/context.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${B2T_TRANSCRIPTIONS_DIR:-./transcriptions}
+        target: /app/transcriptions
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${B2T_DB_DIR:-./db_data}
+        target: /app/db_data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${B2T_CHROMA_DIR:-./chroma_data}
+        target: /app/chroma_data
+        bind:
+          create_host_path: false
+      # yutto 登录态由容器生成并保存在 Docker named volume 中。
+      - type: volume
+        source: yutto_config
+        target: /home/appuser/.config
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
       interval: 30s
@@ -49,3 +81,6 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+
+volumes:
+  yutto_config:

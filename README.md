@@ -217,11 +217,27 @@ cp config.toml.example config.toml
 
 按需创建或复制 `summary_presets.toml` 和 `context.toml`，并在 `config.toml` 中配置阿里云 OSS、转录服务和 LLM 所需的凭据。该部署继续使用阿里云 OSS，不需要启动或配置 MinIO。
 
+复制环境变量示例：
+
+```bash
+cp .env.example .env
+```
+
+Linux 用户应将 `.env` 中的 `B2T_UID` 和 `B2T_GID` 设置为 `id -u`、`id -g` 输出的数字，确保容器写入 `transcriptions`、`db_data` 和 `chroma_data` 的文件仍属于当前宿主用户。Docker Desktop 用户可以保留默认值 `1000`。
+
 首次启动或更新镜像：
 
 ```bash
 docker compose up -d --build
 ```
+
+需要登录 Bilibili 时，在后端容器中运行：
+
+```bash
+docker compose exec backend uv run --no-sync yutto auth login
+```
+
+yutto 登录态保存在 Docker 管理的 `yutto_config` volume 中，不再挂载 Windows 或 Linux 的宿主机认证文件。它会在容器重建和普通 `docker compose down` 后继续保留；执行 `docker compose down -v` 会将其删除。
 
 浏览器访问 `http://127.0.0.1:${B2T_FRONTEND_PORT:-6010}`；可在 `.env` 中设置 `B2T_FRONTEND_PORT` 改用其他宿主机端口，`.env.example` 提供所有可配置路径和变量的示例。
 
@@ -252,7 +268,7 @@ docker compose up -d --build
 docker compose down
 ```
 
-`docker compose down` 不会删除宿主机绑定的目录。升级、迁移或清理前，建议备份 `transcriptions`、`db_data`、`chroma_data`，以及 `config.toml`、`summary_presets.toml`、`context.toml` 三个配置文件。
+`docker compose down` 不会删除宿主机绑定的目录或 yutto 登录态 volume。升级、迁移或清理前，建议备份 `transcriptions`、`db_data`、`chroma_data`，以及 `config.toml`、`summary_presets.toml`、`context.toml` 三个配置文件。不要使用 `docker compose down -v`，除非确定要同时清除容器内的 yutto 登录态。
 
 ## CLI 使用
 

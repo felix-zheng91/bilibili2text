@@ -25,10 +25,13 @@ wheels/
 
 # Runtime data and generated outputs
 /test-audio/
-/transcriptions/
+/transcriptions/*
+!/transcriptions/.gitkeep
 /web-ui/transcriptions/
-/db_data/
-/chroma_data/
+/db_data/*
+!/db_data/.gitkeep
+/chroma_data/*
+!/chroma_data/.gitkeep
 /web-ui/logs/
 /input.md
 /output.*
