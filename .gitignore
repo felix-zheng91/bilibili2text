@@ -1,6 +1,8 @@
 # OS / editor
 .DS_Store
 .claude/
+.idea/
+*.iml
 
 # Local environment and secrets
 .env
