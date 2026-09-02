@@ -9,6 +9,14 @@ from typing import Any
 DEFAULT_SUMMARY_PRESETS_FILE = "summary_presets.toml"
 DEFAULT_SUMMARY_CONTEXT_FILE = "context.toml"
 DEFAULT_STT_PROFILE = "qwen"
+STOCK_STATUS_MODE_BLOCKING_YFINANCE = "blocking_yfinance"
+STOCK_STATUS_MODE_BACKGROUND_HYBRID = "background_hybrid"
+SUPPORTED_STOCK_STATUS_MODES = frozenset(
+    {
+        STOCK_STATUS_MODE_BLOCKING_YFINANCE,
+        STOCK_STATUS_MODE_BACKGROUND_HYBRID,
+    }
+)
 DEFAULT_BILIBILI_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -57,6 +65,7 @@ class AlicloudStorageConfig:
     access_key_secret: str = ""
     base_prefix: str = "b2t"
     temporary_prefix: str = "temp-audio"
+    temporary_url_expire_seconds: int = 7200
     public_base_url: str = ""
     auto_create_bucket: bool = False
 
@@ -95,6 +104,10 @@ class STTProfile:
     volc_show_utterances: bool = True
     volc_poll_interval_seconds: int = 5
     volc_timeout_seconds: int = 1800
+
+    # Speaker diarization (supported by fun-asr model via Transcription.async_call)
+    diarization_enabled: bool = False
+    speaker_count: int = 2
 
 
 def _default_stt_profiles() -> dict[str, "STTProfile"]:
@@ -140,31 +153,21 @@ def _default_stt_profiles() -> dict[str, "STTProfile"]:
 class STTConfig:
     profile: str = DEFAULT_STT_PROFILE
     profiles: dict[str, STTProfile] = field(default_factory=_default_stt_profiles)
-    provider: str = "qwen"
-    language: str = "zh"
-    storage_profile: str = ""
 
-    qwen_api_key: str = ""
-    qwen_model: str = "qwen3-asr-flash-filetrans"
-    qwen_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
+    @property
+    def selected_profile(self) -> STTProfile:
+        try:
+            return self.profiles[self.profile]
+        except KeyError:
+            available = ", ".join(self.profiles)
+            raise ValueError(
+                f"stt.profile `{self.profile}` 不存在，可选值: {available}"
+            ) from None
 
-    groq_api_key: str = ""
-    groq_model: str = "whisper-large-v3-turbo"
-    groq_base_url: str = "https://api.groq.com/openai/v1"
-    groq_chunk_length: int = 1800
-    groq_overlap: int = 10
-    groq_bitrate: str = "64k"
-
-    volc_api_key: str = ""
-    volc_resource_id: str = "volc.seedasr.auc"
-    volc_submit_url: str = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit"
-    volc_query_url: str = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query"
-    volc_enable_itn: bool = True
-    volc_enable_punc: bool = True
-    volc_enable_ddc: bool = False
-    volc_show_utterances: bool = True
-    volc_poll_interval_seconds: int = 5
-    volc_timeout_seconds: int = 1800
+    def __getattr__(self, name: str) -> object:
+        if name in STTProfile.__dataclass_fields__:
+            return getattr(self.selected_profile, name)
+        raise AttributeError(name)
 
 
 @dataclass(frozen=True)
@@ -235,6 +238,47 @@ class SummaryContextConfig:
 @dataclass(frozen=True)
 class ConverterConfig:
     min_length: int = 60
+    stock_status_mode: str = STOCK_STATUS_MODE_BLOCKING_YFINANCE
+
+
+def get_stock_status_mode(config: object) -> str:
+    """Return the configured stock mode, defaulting legacy config objects safely."""
+    converter = getattr(config, "converter", None)
+    mode = getattr(converter, "stock_status_mode", STOCK_STATUS_MODE_BLOCKING_YFINANCE)
+    return (
+        mode
+        if mode in SUPPORTED_STOCK_STATUS_MODES
+        else STOCK_STATUS_MODE_BLOCKING_YFINANCE
+    )
+
+
+def _load_converter_config(raw_converter: dict) -> ConverterConfig:
+    if not isinstance(raw_converter, dict):
+        raise ValueError("converter 配置必须是 TOML 表")
+
+    allowed_fields = {"min_length", "stock_status_mode"}
+    unknown_fields = sorted(set(raw_converter) - allowed_fields)
+    if unknown_fields:
+        raise ValueError(f"converter 包含未知字段: {', '.join(unknown_fields)}")
+
+    min_length = raw_converter.get("min_length", ConverterConfig.min_length)
+    if not isinstance(min_length, int) or isinstance(min_length, bool):
+        raise ValueError("converter.min_length 必须是整数")
+
+    stock_status_mode = raw_converter.get(
+        "stock_status_mode", ConverterConfig.stock_status_mode
+    )
+    if not isinstance(stock_status_mode, str):
+        raise ValueError("converter.stock_status_mode 必须是字符串")
+    stock_status_mode = stock_status_mode.strip().lower()
+    if stock_status_mode not in SUPPORTED_STOCK_STATUS_MODES:
+        supported = ", ".join(sorted(SUPPORTED_STOCK_STATUS_MODES))
+        raise ValueError("converter.stock_status_mode 必须是以下值之一: " + supported)
+
+    return ConverterConfig(
+        min_length=min_length,
+        stock_status_mode=stock_status_mode,
+    )
 
 
 @dataclass(frozen=True)
@@ -710,49 +754,6 @@ def resolve_stt_profile(
     return profile
 
 
-def flatten_stt_profile(
-    stt: STTConfig,
-    profile: STTProfile,
-    profile_name: str,
-) -> STTConfig:
-    """Create a new STTConfig with the selected profile's fields flattened.
-
-    Args:
-        stt: The original STT configuration (preserves profiles dict).
-        profile: The profile whose fields should be flattened to top level.
-        profile_name: The name to record as the active profile.
-
-    Returns:
-        A new STTConfig with top-level fields reflecting the chosen profile.
-    """
-    return STTConfig(
-        profile=profile_name,
-        profiles=stt.profiles,
-        provider=profile.provider,
-        language=profile.language,
-        storage_profile=profile.storage_profile,
-        qwen_api_key=profile.qwen_api_key,
-        qwen_model=profile.qwen_model,
-        qwen_base_url=profile.qwen_base_url,
-        groq_api_key=profile.groq_api_key,
-        groq_model=profile.groq_model,
-        groq_base_url=profile.groq_base_url,
-        groq_chunk_length=profile.groq_chunk_length,
-        groq_overlap=profile.groq_overlap,
-        groq_bitrate=profile.groq_bitrate,
-        volc_api_key=profile.volc_api_key,
-        volc_resource_id=profile.volc_resource_id,
-        volc_submit_url=profile.volc_submit_url,
-        volc_query_url=profile.volc_query_url,
-        volc_enable_itn=profile.volc_enable_itn,
-        volc_enable_punc=profile.volc_enable_punc,
-        volc_enable_ddc=profile.volc_enable_ddc,
-        volc_show_utterances=profile.volc_show_utterances,
-        volc_poll_interval_seconds=profile.volc_poll_interval_seconds,
-        volc_timeout_seconds=profile.volc_timeout_seconds,
-    )
-
-
 def resolve_summarize_api_base(profile: SummarizeModelProfile) -> str:
     api_base = profile.api_base.strip()
     if api_base:
@@ -866,6 +867,14 @@ def _load_stt_profile(
         raise ValueError(f"{section_name}.volc_poll_interval_seconds 必须是整数")
     if not isinstance(merged["volc_timeout_seconds"], int):
         raise ValueError(f"{section_name}.volc_timeout_seconds 必须是整数")
+    if not isinstance(merged["diarization_enabled"], bool):
+        raise ValueError(f"{section_name}.diarization_enabled 必须是布尔值")
+    if (
+        isinstance(merged["speaker_count"], bool)
+        or not isinstance(merged["speaker_count"], int)
+        or merged["speaker_count"] < 1
+    ):
+        raise ValueError(f"{section_name}.speaker_count 必须是正整数")
 
     provider = str(merged["provider"]).strip().lower()
     if provider not in {"qwen", "groq", "volc"}:
@@ -922,11 +931,7 @@ def _load_stt_config(raw_stt: dict) -> STTConfig:
         available = ", ".join(profiles.keys())
         raise ValueError(f"stt.profile `{profile}` 不存在，可选值: {available}")
 
-    return flatten_stt_profile(
-        STTConfig(profile=profile, profiles=profiles),
-        selected_profile,
-        profile,
-    )
+    return STTConfig(profile=profile, profiles=profiles)
 
 
 def _validate_storage_backend_choice(value: str, *, field_name: str) -> str:
@@ -1012,6 +1017,12 @@ def _load_storage_config(raw_storage: dict) -> StorageConfig:
     alicloud = AlicloudStorageConfig(**alicloud_source)
     if not isinstance(alicloud.auto_create_bucket, bool):
         raise ValueError("storage.alicloud.auto_create_bucket 必须是布尔值")
+    if isinstance(alicloud.temporary_url_expire_seconds, bool) or not isinstance(
+        alicloud.temporary_url_expire_seconds, int
+    ):
+        raise ValueError("storage.alicloud.temporary_url_expire_seconds 必须是整数秒")
+    if alicloud.temporary_url_expire_seconds <= 0:
+        raise ValueError("storage.alicloud.temporary_url_expire_seconds 必须大于 0")
 
     alicloud_string_fields = {
         "storage.alicloud.region": alicloud.region,
@@ -1584,7 +1595,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         fancy_html=fancy_html_config,
         summary_presets=summary_presets,
         summary_context=summary_context,
-        converter=ConverterConfig(**raw.get("converter", {})),
+        converter=_load_converter_config(raw.get("converter", {})),
         rag=rag_config,
         feishu=feishu_config,
         monitor=monitor_config,
@@ -1688,35 +1699,12 @@ def create_app_config(
             volc_show_utterances=stt_profile.volc_show_utterances,
             volc_poll_interval_seconds=stt_profile.volc_poll_interval_seconds,
             volc_timeout_seconds=stt_profile.volc_timeout_seconds,
+            diarization_enabled=stt_profile.diarization_enabled,
+            speaker_count=stt_profile.speaker_count,
         )
 
     stt_profiles[profile_key] = stt_profile
-    stt_config = STTConfig(
-        profile=profile_key,
-        profiles=stt_profiles,
-        provider=stt_profile.provider,
-        language=stt_profile.language,
-        storage_profile=stt_profile.storage_profile,
-        qwen_api_key=stt_profile.qwen_api_key,
-        qwen_model=stt_profile.qwen_model,
-        qwen_base_url=stt_profile.qwen_base_url,
-        groq_api_key=stt_profile.groq_api_key,
-        groq_model=stt_profile.groq_model,
-        groq_base_url=stt_profile.groq_base_url,
-        groq_chunk_length=stt_profile.groq_chunk_length,
-        groq_overlap=stt_profile.groq_overlap,
-        groq_bitrate=stt_profile.groq_bitrate,
-        volc_api_key=stt_profile.volc_api_key,
-        volc_resource_id=stt_profile.volc_resource_id,
-        volc_submit_url=stt_profile.volc_submit_url,
-        volc_query_url=stt_profile.volc_query_url,
-        volc_enable_itn=stt_profile.volc_enable_itn,
-        volc_enable_punc=stt_profile.volc_enable_punc,
-        volc_enable_ddc=stt_profile.volc_enable_ddc,
-        volc_show_utterances=stt_profile.volc_show_utterances,
-        volc_poll_interval_seconds=stt_profile.volc_poll_interval_seconds,
-        volc_timeout_seconds=stt_profile.volc_timeout_seconds,
-    )
+    stt_config = STTConfig(profile=profile_key, profiles=stt_profiles)
 
     # Build summarization config
     summarize_provider = summarize_provider.strip().lower() or (

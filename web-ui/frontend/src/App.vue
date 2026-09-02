@@ -1,616 +1,315 @@
 <script setup>
-  import {
-    computed,
-    nextTick,
-    onBeforeUnmount,
-    onMounted,
-    ref,
-    watch
-  } from 'vue'
+  import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
   import { useRoute, useRouter } from 'vue-router'
-  import { Brain, History, KeyRound, Sparkles } from 'lucide-vue-next'
+  import {
+    AudioLines,
+    Brain,
+    History,
+    KeyRound,
+    Sparkles
+  } from 'lucide-vue-next'
+  import { startJobStore, stopJobStore } from './composables/useJobStore'
+  import { usePublicCredentials } from './composables/usePublicCredentials'
+  import { useRuntimeFeatures } from './composables/useRuntimeFeatures'
+  import { useSummaryConfig } from './composables/useSummaryConfig'
 
   const route = useRoute()
   const router = useRouter()
+  const { isOpenPublic, loadRuntimeFeatures } = useRuntimeFeatures()
+  const { refreshCredentials } = usePublicCredentials()
+  const { initializeSummaryConfig } = useSummaryConfig()
 
-  // ─── Summary configuration state ─────────────────────────────────
-  const summaryPresets = ref([])
-  const summaryDefaultPreset = ref('')
-  const summaryDefaultPromptTemplate = ref('')
-  const summaryProfiles = ref([])
-  const selectedSummaryPreset = ref('')
-  const selectedSummaryProfile = ref('')
-  const summaryPresetError = ref('')
-  const summaryProfileError = ref('')
-  const isLoadingSummaryPresets = ref(false)
-  const isLoadingSummaryProfiles = ref(false)
+  const navigation = computed(() => [
+    { key: 'process', label: '新建转录', path: '/process', icon: Sparkles },
+    { key: 'history', label: '历史记录', path: '/history', icon: History },
+    { key: 'rag', label: '知识库', path: '/rag', icon: Brain },
+    ...(isOpenPublic.value
+      ? [
+          {
+            key: 'settings',
+            label: 'API Key 配置',
+            path: '/settings',
+            icon: KeyRound
+          }
+        ]
+      : [])
+  ])
 
-  // ─── STT configuration state ─────────────────────────────────
-  const sttProfiles = ref([])
-  const selectedSttProfile = ref('')
-  const sttProfileError = ref('')
-  const isLoadingSttProfiles = ref(false)
-
-  const tabBarRef = ref(null)
-  const tabIndicatorStyle = ref({
-    width: '0px',
-    transform: 'translateX(0px)'
-  })
-  const runtimeFeatures = ref({
-    mode: 'default',
-    allow_upload_audio: true,
-    allow_delete: true,
-    requires_user_api_key: false,
-    api_key_configured: true
-  })
-
-  const LOCAL_API_KEY_KEY = 'b2t.public-api-key'
-  const LOCAL_DEEPSEEK_API_KEY_KEY = 'b2t.public-deepseek-api-key'
-  const LOCAL_CUSTOM_LLM_BASE_URL_KEY = 'b2t.public-custom-llm-base-url'
-  const LOCAL_CUSTOM_LLM_API_KEY_KEY = 'b2t.public-custom-llm-api-key'
-  const LOCAL_CUSTOM_LLM_MODEL_KEY = 'b2t.public-custom-llm-model'
-  const CUSTOM_LLM_PROFILE_NAME = 'open_public_custom_llm'
-  const localApiKeyConfigured = ref(true)
-  const localDeepseekApiKeyConfigured = ref(false)
-  const localCustomLlmConfigured = ref(false)
-
-  const refreshLocalApiKeyStatus = () => {
-    try {
-      const key = (window.localStorage.getItem(LOCAL_API_KEY_KEY) || '').trim()
-      localApiKeyConfigured.value = key.length > 0
-      const dsKey = (
-        window.localStorage.getItem(LOCAL_DEEPSEEK_API_KEY_KEY) || ''
-      ).trim()
-      localDeepseekApiKeyConfigured.value = dsKey.length > 0
-      const customBaseUrl = (
-        window.localStorage.getItem(LOCAL_CUSTOM_LLM_BASE_URL_KEY) || ''
-      ).trim()
-      const customApiKey = (
-        window.localStorage.getItem(LOCAL_CUSTOM_LLM_API_KEY_KEY) || ''
-      ).trim()
-      const customModel = (
-        window.localStorage.getItem(LOCAL_CUSTOM_LLM_MODEL_KEY) || ''
-      ).trim()
-      localCustomLlmConfigured.value = Boolean(
-        customBaseUrl && customApiKey && customModel
-      )
-    } catch {
-      localApiKeyConfigured.value = false
-      localDeepseekApiKeyConfigured.value = false
-      localCustomLlmConfigured.value = false
-    }
-  }
-
-  const getLocalCustomLlmProfile = () => {
-    try {
-      const baseUrl = (
-        window.localStorage.getItem(LOCAL_CUSTOM_LLM_BASE_URL_KEY) || ''
-      ).trim()
-      const apiKey = (
-        window.localStorage.getItem(LOCAL_CUSTOM_LLM_API_KEY_KEY) || ''
-      ).trim()
-      const model = (
-        window.localStorage.getItem(LOCAL_CUSTOM_LLM_MODEL_KEY) || ''
-      ).trim()
-      if (!baseUrl || !apiKey || !model) {
-        return null
-      }
-      return {
-        name: CUSTOM_LLM_PROFILE_NAME,
-        provider: 'openai_compatible',
-        model,
-        api_base: baseUrl
-      }
-    } catch {
-      return null
-    }
-  }
-
-  const isOpenPublic = computed(
-    () => runtimeFeatures.value.mode === 'open-public'
-  )
-
-  // Active tab detection
   const currentView = computed(() => {
     const path = route.path
-    if (path.startsWith('/process')) return 'process'
     if (path.startsWith('/history')) return 'history'
     if (path.startsWith('/rag')) return 'rag'
     if (path.startsWith('/settings')) return 'settings'
     return 'process'
   })
 
-  const parseJsonSafely = async (resp, fallbackMessage) => {
-    const raw = await resp.text()
-    if (!raw) {
-      return null
-    }
-    try {
-      return JSON.parse(raw)
-    } catch {
-      throw new Error(
-        `${fallbackMessage}（服务返回了非 JSON 响应，HTTP ${resp.status}）`
-      )
-    }
-  }
-
-  const pickApiError = (resp, data, fallbackMessage) => {
-    if (
-      data &&
-      typeof data === 'object' &&
-      typeof data.detail === 'string' &&
-      data.detail.trim()
-    ) {
-      return data.detail
-    }
-    return `${fallbackMessage}（HTTP ${resp.status}）`
-  }
-
-  const loadRuntimeFeatures = async () => {
-    try {
-      const resp = await fetch('/api/runtime')
-      const data = await parseJsonSafely(resp, '获取运行时配置失败')
-
-      if (!resp.ok) {
-        throw new Error(pickApiError(resp, data, '获取运行时配置失败'))
+  const currentPage = computed(
+    () =>
+      navigation.value.find((item) => item.key === currentView.value) || {
+        label: '新建转录'
       }
-      if (!data || typeof data !== 'object') {
-        throw new Error('获取运行时配置失败（服务返回空响应）')
-      }
-
-      runtimeFeatures.value = {
-        mode: data.mode === 'open-public' ? 'open-public' : 'default',
-        allow_upload_audio: Boolean(data.allow_upload_audio),
-        allow_delete: Boolean(data.allow_delete),
-        requires_user_api_key: Boolean(data.requires_user_api_key),
-        api_key_configured: Boolean(data.api_key_configured)
-      }
-    } catch (err) {
-      console.error(err)
-      runtimeFeatures.value = {
-        mode: 'default',
-        allow_upload_audio: true,
-        allow_delete: true,
-        requires_user_api_key: false,
-        api_key_configured: true
-      }
-    }
-  }
-
-  const loadSummaryPresets = async () => {
-    isLoadingSummaryPresets.value = true
-    summaryPresetError.value = ''
-    try {
-      const resp = await fetch('/api/summary-presets')
-      const data = await parseJsonSafely(resp, '获取总结 presets 失败')
-
-      if (!resp.ok) {
-        throw new Error(pickApiError(resp, data, '获取总结 presets 失败'))
-      }
-      if (!data || typeof data !== 'object') {
-        throw new Error('获取总结 presets 失败（服务返回空响应）')
-      }
-
-      const presets = Array.isArray(data.presets) ? data.presets : []
-      summaryPresets.value = presets
-      if (presets.length === 0) {
-        summaryDefaultPreset.value = ''
-        summaryDefaultPromptTemplate.value = ''
-        selectedSummaryPreset.value = ''
-        return
-      }
-
-      const fallback = presets[0].name
-      summaryDefaultPreset.value = data.default_preset || fallback
-      selectedSummaryPreset.value =
-        data.selected_preset || summaryDefaultPreset.value || fallback
-      const defaultPreset =
-        presets.find((item) => item.name === summaryDefaultPreset.value) ||
-        presets.find((item) => item.name === selectedSummaryPreset.value) ||
-        presets[0]
-      summaryDefaultPromptTemplate.value =
-        typeof defaultPreset?.prompt_template === 'string'
-          ? defaultPreset.prompt_template
-          : ''
-    } catch (err) {
-      console.error(err)
-      summaryPresets.value = []
-      summaryDefaultPreset.value = ''
-      summaryDefaultPromptTemplate.value = ''
-      selectedSummaryPreset.value = ''
-      summaryPresetError.value =
-        err instanceof Error
-          ? `preset 加载失败：${err.message}`
-          : 'preset 加载失败，请检查后端服务是否已启动'
-    } finally {
-      isLoadingSummaryPresets.value = false
-    }
-  }
-
-  const loadSummaryProfiles = async () => {
-    isLoadingSummaryProfiles.value = true
-    summaryProfileError.value = ''
-    try {
-      const resp = await fetch('/api/summarize-profiles')
-      const data = await parseJsonSafely(resp, '获取总结模型配置失败')
-
-      if (!resp.ok) {
-        throw new Error(pickApiError(resp, data, '获取总结模型配置失败'))
-      }
-      if (!data || typeof data !== 'object') {
-        throw new Error('获取总结模型配置失败（服务返回空响应）')
-      }
-
-      const profiles = Array.isArray(data.profiles) ? [...data.profiles] : []
-      const customProfile = isOpenPublic.value
-        ? getLocalCustomLlmProfile()
-        : null
-      if (customProfile) {
-        const existingIndex = profiles.findIndex(
-          (profile) => profile.name === CUSTOM_LLM_PROFILE_NAME
-        )
-        if (existingIndex >= 0) {
-          profiles.splice(existingIndex, 1, customProfile)
-        } else {
-          profiles.push(customProfile)
-        }
-      }
-      summaryProfiles.value = profiles
-      if (profiles.length === 0) {
-        selectedSummaryProfile.value = ''
-        return
-      }
-
-      const fallback = profiles[0].name
-      selectedSummaryProfile.value = customProfile
-        ? CUSTOM_LLM_PROFILE_NAME
-        : data.selected_profile || data.default_profile || fallback
-    } catch (err) {
-      console.error(err)
-      summaryProfiles.value = []
-      selectedSummaryProfile.value = ''
-      summaryProfileError.value =
-        err instanceof Error
-          ? `模型配置加载失败：${err.message}`
-          : '模型配置加载失败，请检查后端服务是否已启动'
-    } finally {
-      isLoadingSummaryProfiles.value = false
-    }
-  }
-
-  const loadSttProfiles = async () => {
-    isLoadingSttProfiles.value = true
-    sttProfileError.value = ''
-    try {
-      const resp = await fetch('/api/stt-profiles')
-      const data = await parseJsonSafely(resp, '获取 STT 配置失败')
-      if (!resp.ok) {
-        throw new Error(pickApiError(resp, data, '获取 STT 配置失败'))
-      }
-      if (!data || typeof data !== 'object') {
-        throw new Error('获取 STT 配置失败（服务返回空响应）')
-      }
-      const profiles = Array.isArray(data.profiles) ? data.profiles : []
-      sttProfiles.value = profiles
-      if (profiles.length === 0) {
-        selectedSttProfile.value = ''
-        return
-      }
-      const fallback = profiles[0].name
-      selectedSttProfile.value =
-        data.selected_profile || data.default_profile || fallback
-    } catch (err) {
-      console.error(err)
-      sttProfiles.value = []
-      selectedSttProfile.value = ''
-      sttProfileError.value =
-        err instanceof Error
-          ? `STT 配置加载失败：${err.message}`
-          : 'STT 配置加载失败，请检查后端服务是否已启动'
-    } finally {
-      isLoadingSttProfiles.value = false
-    }
-  }
-
-  // Tab bar indicator animation
-  const tabRefs = ref({})
-  const setTabRef = (view, el) => {
-    if (el) tabRefs.value[view] = el
-  }
-
-  const updateTabIndicator = () => {
-    const bar = tabBarRef.value
-    const activeButton = tabRefs.value[currentView.value]
-    if (!bar || !activeButton) {
-      return
-    }
-
-    const barRect = bar.getBoundingClientRect()
-    const buttonRect = activeButton.getBoundingClientRect()
-    const offsetX = buttonRect.left - barRect.left
-
-    tabIndicatorStyle.value = {
-      width: `${buttonRect.width}px`,
-      transform: `translateX(${offsetX}px)`
-    }
-  }
-
-  const onApiKeyUpdated = async () => {
-    refreshLocalApiKeyStatus()
-    await loadSummaryProfiles()
-  }
-
-  const navigateTo = (path) => {
-    router.push(path)
-  }
+  )
 
   onMounted(() => {
-    void nextTick(updateTabIndicator)
-    window.addEventListener('resize', updateTabIndicator)
-    refreshLocalApiKeyStatus()
+    startJobStore()
+    refreshCredentials()
+    void initializeSummaryConfig()
     void (async () => {
       await loadRuntimeFeatures()
-      await Promise.all([
-        loadSummaryProfiles(),
-        loadSummaryPresets(),
-        loadSttProfiles()
-      ])
-      await nextTick()
-      updateTabIndicator()
+      if (!isOpenPublic.value && route.path === '/settings') {
+        router.push('/process')
+      }
     })()
   })
 
-  watch(currentView, async () => {
-    await nextTick()
-    updateTabIndicator()
-  })
-
-  watch(isOpenPublic, async (openPublic) => {
-    if (!openPublic && route.path === '/settings') {
-      router.push('/process')
-      return
-    }
-    await nextTick()
-    updateTabIndicator()
-  })
-
   onBeforeUnmount(() => {
-    window.removeEventListener('resize', updateTabIndicator)
+    stopJobStore()
+  })
+
+  watch(isOpenPublic, (openPublic) => {
+    if (!openPublic && route.path === '/settings') router.push('/process')
   })
 </script>
 
 <template>
-  <main class="shell">
-    <div class="ambient ambient-left"></div>
-    <div class="ambient ambient-right"></div>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <RouterLink
+          class="brand-lockup"
+          to="/process"
+          aria-label="返回新建转录"
+        >
+          <span class="brand-mark"><AudioLines :size="20" /></span>
+          <span class="brand-copy">
+            <strong>闻录</strong>
+          </span>
+        </RouterLink>
 
-    <!-- Tab bar -->
-    <nav ref="tabBarRef" class="tab-bar">
-      <span
-        class="tab-indicator"
-        :style="tabIndicatorStyle"
-        aria-hidden="true"
-      ></span>
-      <button
-        :ref="(el) => setTabRef('process', el)"
-        class="tab-button"
-        :class="{ active: currentView === 'process' }"
-        @click="navigateTo('/process')"
-      >
-        <Sparkles :size="16" />
-        <span>新建转录</span>
-      </button>
-      <button
-        :ref="(el) => setTabRef('history', el)"
-        class="tab-button"
-        :class="{ active: currentView === 'history' }"
-        @click="navigateTo('/history')"
-      >
-        <History :size="16" />
-        <span>历史记录</span>
-      </button>
-      <button
-        :ref="(el) => setTabRef('rag', el)"
-        class="tab-button"
-        :class="{ active: currentView === 'rag' }"
-        @click="navigateTo('/rag')"
-      >
-        <Brain :size="16" />
-        <span>知识库</span>
-      </button>
-      <button
-        v-if="isOpenPublic"
-        :ref="(el) => setTabRef('settings', el)"
-        class="tab-button"
-        :class="{ active: currentView === 'settings' }"
-        @click="navigateTo('/settings')"
-      >
-        <KeyRound :size="16" />
-        <span>API Key</span>
-      </button>
-    </nav>
+        <nav class="top-tabs" aria-label="主导航">
+          <button
+            v-for="item in navigation"
+            :key="item.key"
+            type="button"
+            :class="{ active: currentView === item.key }"
+            @click="router.push(item.path)"
+          >
+            <component :is="item.icon" :size="17" />
+            <span>{{ item.label }}</span>
+          </button>
+        </nav>
+      </div>
+    </header>
 
-    <!-- Routed views -->
-    <RouterView v-slot="{ Component }">
-      <component
-        :is="Component"
-        :summary-presets="summaryPresets"
-        :summary-default-preset="summaryDefaultPreset"
-        :summary-default-prompt-template="summaryDefaultPromptTemplate"
-        :selected-summary-preset="selectedSummaryPreset"
-        :summary-profiles="summaryProfiles"
-        :selected-summary-profile="selectedSummaryProfile"
-        :summary-preset-error="summaryPresetError"
-        :summary-profile-error="summaryProfileError"
-        :is-loading-summary-presets="isLoadingSummaryPresets"
-        :is-loading-summary-profiles="isLoadingSummaryProfiles"
-        :stt-profiles="sttProfiles"
-        :selected-stt-profile="selectedSttProfile"
-        :is-loading-stt-profiles="isLoadingSttProfiles"
-        :stt-profile-error="sttProfileError"
-        :allow-upload="runtimeFeatures.allow_upload_audio"
-        :requires-api-key="runtimeFeatures.requires_user_api_key"
-        :api-key-configured="localApiKeyConfigured"
-        :deepseek-api-key-configured="localDeepseekApiKeyConfigured"
-        :custom-llm-configured="localCustomLlmConfigured"
-        :allow-delete="runtimeFeatures.allow_delete"
-        @update:selected-summary-preset="selectedSummaryPreset = $event"
-        @update:selected-summary-profile="selectedSummaryProfile = $event"
-        @update:selected-stt-profile="selectedSttProfile = $event"
-        @load-summary-presets="loadSummaryPresets"
-        @load-summary-profiles="loadSummaryProfiles"
-        @load-stt-profiles="loadSttProfiles"
-        @api-key-updated="onApiKeyUpdated"
-      />
-    </RouterView>
-  </main>
+    <main class="workspace-content">
+      <header class="page-heading">
+        <h1>{{ currentPage.label }}</h1>
+      </header>
+      <RouterView />
+    </main>
+  </div>
 </template>
 
 <style scoped>
-  /* ─── Shell & Ambient ────────────────────────────────────────── */
-
-  .shell {
-    position: relative;
+  .app-shell {
     min-height: 100vh;
-    padding: clamp(12px, 2vw, 24px) clamp(24px, 4vw, 48px)
-      clamp(24px, 4vw, 48px);
-    overflow: hidden;
   }
 
-  .ambient {
-    position: absolute;
-    border-radius: 999px;
-    filter: blur(80px);
-    opacity: 0.35;
-    pointer-events: none;
-    animation: float 16s ease-in-out infinite;
+  .topbar {
+    position: sticky;
+    z-index: 100;
+    top: 0;
+    border-bottom: 1px solid #dbe1e8;
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: blur(12px);
   }
 
-  .ambient-left {
-    width: 360px;
-    height: 360px;
-    left: -130px;
-    top: -110px;
-    background: #7dd3fc;
+  .topbar-inner {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    width: 100%;
+    max-width: 1440px;
+    min-height: 64px;
+    margin: 0 auto;
+    padding: 0 clamp(28px, 4vw, 56px);
   }
 
-  .ambient-right {
-    width: 420px;
-    height: 420px;
-    right: -180px;
-    bottom: -150px;
-    background: #99f6e4;
-    animation-delay: 0.8s;
+  .brand-lockup {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-right: 30px;
+    border-radius: 7px;
+    color: var(--text-main);
+    text-decoration: none;
   }
 
-  /* ─── Tab bar ────────────────────────────────────────────────── */
+  .brand-lockup:focus-visible {
+    outline: 0;
+    box-shadow: 0 0 0 3px rgba(15, 143, 131, 0.14);
+  }
 
-  .tab-bar {
+  .brand-mark {
+    display: grid;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border-radius: 7px;
+    background: #101820;
+    color: #5eead4;
+  }
+
+  .brand-copy {
+    min-width: 0;
+  }
+
+  .brand-copy strong {
+    font-size: 0.88rem;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .top-tabs {
+    display: flex;
+    align-self: stretch;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .top-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .top-tabs button {
     position: relative;
-    z-index: 2;
-    max-width: 1160px;
-    margin: 0 auto 32px;
     display: inline-flex;
-    gap: 4px;
-    padding: 6px;
-    border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.5);
-    background: rgba(255, 255, 255, 0.45);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-    box-shadow:
-      0 4px 12px rgba(15, 23, 42, 0.04),
-      inset 0 1px 1px rgba(255, 255, 255, 0.6);
-    isolation: isolate;
-  }
-
-  .tab-indicator {
-    position: absolute;
-    top: 6px;
-    left: 0;
-    bottom: 6px;
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.9);
-    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
-    pointer-events: none;
-    transition:
-      transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-      width 0.34s cubic-bezier(0.16, 1, 0.3, 1);
-    z-index: 0;
-  }
-
-  .tab-button {
-    position: relative;
-    z-index: 1;
-    display: inline-flex;
+    flex: 0 0 auto;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    padding: 10px 20px;
-    border: none;
-    border-radius: 14px;
+    gap: 7px;
+    min-width: 110px;
+    padding: 0 16px;
+    border: 0;
     background: transparent;
-    color: var(--text-muted);
-    font-size: 0.9rem;
-    font-weight: 600;
+    color: #687584;
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 700;
     cursor: pointer;
-    transition:
-      color 0.24s ease,
-      transform 0.2s ease;
   }
 
-  .tab-button:hover {
+  .top-tabs button::after {
+    position: absolute;
+    right: 14px;
+    bottom: 0;
+    left: 14px;
+    height: 2px;
+    background: transparent;
+    content: '';
+  }
+
+  .top-tabs button:hover {
+    background: #f6f8f9;
     color: var(--text-soft);
   }
 
-  .tab-button:active {
-    transform: translateY(1px);
+  .top-tabs button.active {
+    background: #f2faf8;
+    color: var(--brand-strong);
   }
 
-  .tab-button.active {
-    color: #0f766e;
+  .top-tabs button.active::after {
+    background: var(--brand);
   }
 
-  .tab-button svg {
-    transition: transform 0.26s ease;
+  .top-tabs button:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: -3px;
   }
 
-  .tab-button.active svg {
-    transform: scale(1.04);
+  .workspace-content {
+    width: 100%;
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 32px clamp(28px, 4vw, 56px) 56px;
   }
 
-  .tab-button:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 2px rgba(15, 118, 110, 0.28);
+  .page-heading {
+    display: grid;
+    gap: 4px;
+    margin-bottom: 22px;
   }
 
-  /* ─── Responsive ─────────────────────────────────────────────── */
+  .page-heading p,
+  .page-heading h1 {
+    margin: 0;
+  }
 
-  @media (max-width: 640px) {
-    .ambient {
-      display: none;
+  .page-heading p {
+    color: var(--brand-strong);
+    font-size: 0.68rem;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .page-heading h1 {
+    font-size: 1.5rem;
+    font-weight: 750;
+    line-height: 1.25;
+  }
+
+  @media (max-width: 760px) {
+    .topbar-inner {
+      grid-template-columns: minmax(0, 1fr);
+      min-height: 0;
+      padding: 10px 20px 0;
     }
 
-    .tab-bar {
-      width: 100%;
-      overflow-x: auto;
-      scrollbar-width: none;
+    .brand-lockup {
+      padding-right: 0;
     }
 
-    .tab-bar::-webkit-scrollbar {
-      display: none;
+    .top-tabs {
+      grid-column: 1 / -1;
+      min-height: 44px;
+      margin-top: 7px;
     }
 
-    .tab-button {
+    .top-tabs button {
       flex: 1 0 auto;
-      justify-content: center;
-      min-width: 0;
-      padding: 9px 10px;
-      font-size: 0.84rem;
+      min-width: 104px;
+      padding: 0 12px;
     }
 
-    .tab-button span {
-      white-space: nowrap;
+    .workspace-content {
+      padding: 24px 20px 40px;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .topbar-inner {
+      padding-inline: 14px;
+    }
+
+    .top-tabs button {
+      min-width: 98px;
+      padding-inline: 10px;
+      font-size: 0.78rem;
+    }
+
+    .workspace-content {
+      padding: 20px 14px 32px;
+    }
+
+    .page-heading {
+      margin-bottom: 16px;
+    }
+
+    .page-heading h1 {
+      font-size: 1.35rem;
     }
   }
 </style>

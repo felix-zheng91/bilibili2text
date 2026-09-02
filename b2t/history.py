@@ -6,12 +6,17 @@ import sqlite3
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from b2t.stock_status import StockDailyStatus
-from b2t.storage.base import StoredArtifact, classify_artifact_filename
+from b2t.storage.base import (
+    SUMMARY_ARTIFACT_KINDS,
+    ArtifactKind,
+    StoredArtifact,
+    resolve_artifact_kind,
+)
 
 _DB_FILENAME = "b2t_history.db"
 _RUN_ID_SUFFIX_PATTERN = re.compile(r"^-[0-9a-f]{8}(?:_|$)", re.IGNORECASE)
@@ -19,6 +24,14 @@ _ALLOWED_SORT_COLUMNS = frozenset(
     {"created_at", "title", "bvid", "author", "pubdate", "file_count"}
 )
 _MULTIPART_TITLE_PATTERN = re.compile(r"^p([1-9][0-9]*)_(.+)$", re.IGNORECASE)
+_BILIBILI_BVID_PATTERN = re.compile(r"^BV[0-9A-Za-z]{10}$", re.IGNORECASE)
+_HISTORY_PLATFORM_SQL: dict[str, str] = {
+    "bilibili": "(record_type = 'transcription' AND length(bvid) = 12 AND lower(substr(bvid, 1, 2)) = 'bv')",
+    "xiaoyuzhou": "(record_type = 'transcription' AND instr(lower(bvid), 'xiaoyuzhou_') = 1)",
+    "ximalaya": "(record_type = 'transcription' AND instr(lower(bvid), 'ximalaya_') = 1)",
+    "upload": "(record_type = 'transcription' AND instr(lower(bvid), 'upload-') = 1)",
+    "knowledge_base": "record_type = 'rag_query'",
+}
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS transcription_runs (
@@ -28,6 +41,7 @@ CREATE TABLE IF NOT EXISTS transcription_runs (
     title         TEXT    NOT NULL DEFAULT '',
     author        TEXT    NOT NULL DEFAULT '',
     pubdate       TEXT    NOT NULL DEFAULT '',
+    tid           INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT    NOT NULL,
     has_summary   INTEGER NOT NULL DEFAULT 0,
     file_count    INTEGER NOT NULL DEFAULT 0,
@@ -46,11 +60,22 @@ CREATE TABLE IF NOT EXISTS transcription_artifacts (
     filename      TEXT    NOT NULL,
     storage_key   TEXT    NOT NULL,
     backend       TEXT    NOT NULL,
+    derived_from    TEXT  NOT NULL DEFAULT '',
     summary_preset  TEXT  NOT NULL DEFAULT '',
     summary_profile TEXT  NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_run_id ON transcription_artifacts(run_id);
+
+CREATE TABLE IF NOT EXISTS summary_regenerations (
+    run_id          TEXT NOT NULL REFERENCES transcription_runs(run_id) ON DELETE CASCADE,
+    summary_preset  TEXT NOT NULL,
+    summary_profile TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'idle',
+    error           TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (run_id, summary_preset, summary_profile)
+);
 
 CREATE TABLE IF NOT EXISTS stock_status_cache (
     bvid        TEXT NOT NULL,
@@ -78,19 +103,32 @@ class HistoryItem:
     created_at: str
     has_summary: bool
     file_count: int
+    summary_version_count: int = 0
     record_type: str = "transcription"  # "transcription" | "rag_query"
+    tid: int = 0
 
 
 @dataclass(frozen=True)
 class HistoryArtifact:
     """One downloadable file within a run."""
 
-    kind: str
+    kind: ArtifactKind | str
     filename: str
     storage_key: str
     backend: str
+    derived_from: str = ""
     summary_preset: str = ""
     summary_profile: str = ""
+
+
+@dataclass(frozen=True)
+class SummaryRegeneration:
+    """Regeneration state for one summary preset and model profile."""
+
+    summary_preset: str
+    summary_profile: str
+    status: str
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,6 +146,8 @@ class HistoryDetail:
     record_type: str = "transcription"
     fancy_html_status: str = "idle"
     fancy_html_error: str = ""
+    summary_regenerations: list[SummaryRegeneration] = field(default_factory=list)
+    tid: int = 0
 
 
 @dataclass(frozen=True)
@@ -151,12 +191,11 @@ class HistoryDB:
         yield self._conn()
 
     @staticmethod
-    def _normalize_artifact_kind(kind: str, filename: str) -> str:
-        inferred = classify_artifact_filename(filename)
-        normalized_kind = (kind or "").strip()
-        if normalized_kind in {"", "file"} and inferred:
-            return inferred
-        return normalized_kind or inferred or "file"
+    def _normalize_artifact_kind(
+        kind: ArtifactKind | str | None,
+        filename: str,
+    ) -> ArtifactKind | str:
+        return resolve_artifact_kind(kind, filename)
 
     @staticmethod
     def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -170,6 +209,11 @@ class HistoryDB:
             conn.execute(
                 "ALTER TABLE transcription_artifacts "
                 "ADD COLUMN summary_preset TEXT NOT NULL DEFAULT ''"
+            )
+        if "derived_from" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE transcription_artifacts "
+                "ADD COLUMN derived_from TEXT NOT NULL DEFAULT ''"
             )
         if "summary_profile" not in existing_columns:
             conn.execute(
@@ -195,6 +239,11 @@ class HistoryDB:
                 "ALTER TABLE transcription_runs "
                 "ADD COLUMN fancy_html_error TEXT NOT NULL DEFAULT ''"
             )
+        if "tid" not in existing_run_columns:
+            conn.execute(
+                "ALTER TABLE transcription_runs "
+                "ADD COLUMN tid INTEGER NOT NULL DEFAULT 0"
+            )
 
     def record_run(
         self,
@@ -204,6 +253,7 @@ class HistoryDB:
         title: str,
         author: str = "",
         pubdate: str = "",
+        tid: int = 0,
         created_at: str | None = None,
         has_summary: bool = False,
         artifacts: list[HistoryArtifact] | None = None,
@@ -220,12 +270,13 @@ class HistoryDB:
         with conn:
             existing_artifact_meta = {
                 str(row["storage_key"]): (
+                    str(row["derived_from"] or ""),
                     str(row["summary_preset"] or ""),
                     str(row["summary_profile"] or ""),
                 )
                 for row in conn.execute(
                     """\
-                    SELECT storage_key, summary_preset, summary_profile
+                    SELECT storage_key, derived_from, summary_preset, summary_profile
                     FROM transcription_artifacts
                     WHERE run_id = ?
                     """,
@@ -262,15 +313,20 @@ class HistoryDB:
                 """\
                 INSERT INTO transcription_runs
                     (
-                        run_id, bvid, title, author, pubdate, created_at,
-                        has_summary, file_count, record_type, fancy_html_status, fancy_html_error
+                        run_id, bvid, title, author, pubdate, tid, created_at,
+                        has_summary, file_count, record_type,
+                        fancy_html_status, fancy_html_error
                     )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     bvid        = excluded.bvid,
                     title       = excluded.title,
                     author      = excluded.author,
                     pubdate     = excluded.pubdate,
+                    tid         = CASE
+                        WHEN excluded.tid > 0 THEN excluded.tid
+                        ELSE transcription_runs.tid
+                    END,
                     created_at  = excluded.created_at,
                     has_summary = excluded.has_summary,
                     file_count  = excluded.file_count,
@@ -284,6 +340,7 @@ class HistoryDB:
                     title,
                     author,
                     pubdate,
+                    tid,
                     created_at,
                     int(has_summary),
                     len(artifact_list),
@@ -305,25 +362,32 @@ class HistoryDB:
                         filename,
                         storage_key,
                         backend,
+                        derived_from,
                         summary_preset,
                         summary_profile
                     )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         run_id,
-                        a.kind,
+                        self._normalize_artifact_kind(a.kind, a.filename),
                         a.filename,
                         a.storage_key,
                         a.backend,
+                        a.derived_from.strip()
+                        or existing_artifact_meta.get(a.storage_key, ("", "", ""))[0],
                         (
                             a.summary_preset.strip()
-                            or existing_artifact_meta.get(a.storage_key, ("", ""))[0]
+                            or existing_artifact_meta.get(a.storage_key, ("", "", ""))[
+                                1
+                            ]
                         ),
                         (
                             a.summary_profile.strip()
-                            or existing_artifact_meta.get(a.storage_key, ("", ""))[1]
+                            or existing_artifact_meta.get(a.storage_key, ("", "", ""))[
+                                2
+                            ]
                         ),
                     )
                     for a in artifact_list
@@ -337,12 +401,18 @@ class HistoryDB:
         page_size: int = 20,
         search: str = "",
         record_type: str = "",
+        platforms: tuple[str, ...] = (),
+        category_tids: tuple[int, ...] = (),
+        authors: tuple[str, ...] = (),
         sort_by: str = "",
         sort_order: str = "desc",
     ) -> HistoryPage:
-        """Paginated listing with optional search on title/bvid/author.
+        """Paginated listing with optional search, metadata filters and sorting.
 
         Args:
+            platforms: Platform identifiers to restrict results to.
+            category_tids: Bilibili category tids to restrict results to.
+            authors: Author names to restrict results to.
             sort_by: Column to sort by; defaults to ``pubdate`` for transcription
                 records and ``created_at`` for rag_query records.
             sort_order: ``desc`` (default) or ``asc``.
@@ -370,7 +440,7 @@ class HistoryDB:
             order_clause = f"{resolved_sort} {order_dir}"
 
         conditions: list[str] = []
-        params: list[str] = []
+        params: list[object] = []
         query = search.strip()
         if query:
             conditions.append("(title LIKE ? OR bvid LIKE ? OR author LIKE ?)")
@@ -379,6 +449,30 @@ class HistoryDB:
         if record_type.strip():
             conditions.append("record_type = ?")
             params.append(record_type.strip())
+        normalized_platforms = tuple(
+            dict.fromkeys(
+                platform.strip().lower()
+                for platform in platforms
+                if platform.strip().lower() in _HISTORY_PLATFORM_SQL
+            )
+        )
+        if normalized_platforms:
+            platform_conditions = [
+                _HISTORY_PLATFORM_SQL[platform] for platform in normalized_platforms
+            ]
+            conditions.append(f"({' OR '.join(platform_conditions)})")
+        normalized_tids = tuple(dict.fromkeys(tid for tid in category_tids if tid > 0))
+        if normalized_tids:
+            placeholders = ",".join("?" * len(normalized_tids))
+            conditions.append(f"tid IN ({placeholders})")
+            params.extend(normalized_tids)
+        normalized_authors = tuple(
+            dict.fromkeys(author.strip() for author in authors if author.strip())
+        )
+        if normalized_authors:
+            placeholders = ",".join("?" * len(normalized_authors))
+            conditions.append(f"author IN ({placeholders})")
+            params.extend(normalized_authors)
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -391,7 +485,21 @@ class HistoryDB:
         offset = (max(1, page) - 1) * page_size
         rows = conn.execute(
             f"""\
-            SELECT run_id, bvid, title, author, pubdate, created_at, has_summary, file_count, record_type
+            SELECT
+                run_id, bvid, title, author, pubdate, tid, created_at,
+                has_summary, file_count, record_type,
+                (
+                    SELECT COUNT(*)
+                    FROM transcription_artifacts AS artifact
+                    WHERE artifact.run_id = transcription_runs.run_id
+                    AND (
+                        artifact.kind = 'summary'
+                        OR (
+                            artifact.kind IN ('', 'file')
+                            AND substr(lower(artifact.filename), -11) = '_summary.md'
+                        )
+                    )
+                ) AS summary_version_count
             FROM transcription_runs
             {where}
             ORDER BY {order_clause}
@@ -410,7 +518,9 @@ class HistoryDB:
                 created_at=r["created_at"],
                 has_summary=bool(r["has_summary"]),
                 file_count=r["file_count"],
+                summary_version_count=int(r["summary_version_count"] or 0),
                 record_type=r["record_type"] or "transcription",
+                tid=int(r["tid"] or 0),
             )
             for r in rows
         ]
@@ -423,13 +533,78 @@ class HistoryDB:
             has_more=(offset + page_size) < total,
         )
 
+    def replace_summary_artifacts(
+        self,
+        run_id: str,
+        *,
+        artifacts: list[HistoryArtifact],
+        replaced_storage_keys: set[str],
+        author: str,
+        pubdate: str,
+    ) -> None:
+        """Atomically replace one summary configuration's artifacts."""
+        conn = self._conn()
+        artifact_keys = {artifact.storage_key for artifact in artifacts}
+        storage_keys_to_remove = replaced_storage_keys | artifact_keys
+        with conn:
+            if storage_keys_to_remove:
+                conn.executemany(
+                    """\
+                    DELETE FROM transcription_artifacts
+                    WHERE run_id = ? AND storage_key = ?
+                    """,
+                    [(run_id, storage_key) for storage_key in storage_keys_to_remove],
+                )
+            conn.executemany(
+                """\
+                INSERT INTO transcription_artifacts
+                    (
+                        run_id, kind, filename, storage_key, backend,
+                        derived_from, summary_preset, summary_profile
+                    )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        run_id,
+                        self._normalize_artifact_kind(
+                            artifact.kind,
+                            artifact.filename,
+                        ),
+                        artifact.filename,
+                        artifact.storage_key,
+                        artifact.backend,
+                        artifact.derived_from,
+                        artifact.summary_preset,
+                        artifact.summary_profile,
+                    )
+                    for artifact in artifacts
+                ],
+            )
+            conn.execute(
+                """\
+                UPDATE transcription_runs
+                SET
+                    author = ?,
+                    pubdate = ?,
+                    has_summary = 1,
+                    file_count = (
+                        SELECT COUNT(*)
+                        FROM transcription_artifacts
+                        WHERE run_id = ?
+                    )
+                WHERE run_id = ?
+                """,
+                (author, pubdate, run_id, run_id),
+            )
+
     def get_run_detail(self, run_id: str) -> HistoryDetail | None:
         """Get full detail including artifacts for one run."""
         conn = self._conn()
         run_row = conn.execute(
             """\
             SELECT
-                run_id, bvid, title, author, pubdate, created_at, has_summary,
+                run_id, bvid, title, author, pubdate, tid, created_at, has_summary,
                 record_type, fancy_html_status, fancy_html_error
             FROM transcription_runs
             WHERE run_id = ?
@@ -441,7 +616,7 @@ class HistoryDB:
 
         artifact_rows = conn.execute(
             """\
-            SELECT kind, filename, storage_key, backend, summary_preset, summary_profile
+            SELECT kind, filename, storage_key, backend, derived_from, summary_preset, summary_profile
             FROM transcription_artifacts
             WHERE run_id = ?
             ORDER BY id ASC
@@ -455,10 +630,29 @@ class HistoryDB:
                 filename=r["filename"],
                 storage_key=r["storage_key"],
                 backend=r["backend"],
+                derived_from=r["derived_from"],
                 summary_preset=r["summary_preset"],
                 summary_profile=r["summary_profile"],
             )
             for r in artifact_rows
+        ]
+        regeneration_rows = conn.execute(
+            """\
+            SELECT summary_preset, summary_profile, status, error
+            FROM summary_regenerations
+            WHERE run_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (run_id,),
+        ).fetchall()
+        summary_regenerations = [
+            SummaryRegeneration(
+                summary_preset=row["summary_preset"],
+                summary_profile=row["summary_profile"],
+                status=row["status"] or "idle",
+                error=row["error"] or "",
+            )
+            for row in regeneration_rows
         ]
 
         return HistoryDetail(
@@ -473,6 +667,8 @@ class HistoryDB:
             record_type=run_row["record_type"] or "transcription",
             fancy_html_status=run_row["fancy_html_status"] or "idle",
             fancy_html_error=run_row["fancy_html_error"] or "",
+            summary_regenerations=summary_regenerations,
+            tid=int(run_row["tid"] or 0),
         )
 
     def update_run_fancy_html_status(
@@ -492,6 +688,103 @@ class HistoryDB:
                 """,
                 (status.strip() or "idle", error.strip(), run_id),
             )
+
+    def try_start_summary_regeneration(
+        self,
+        run_id: str,
+        *,
+        summary_preset: str,
+        summary_profile: str,
+    ) -> bool:
+        now = datetime.now(tz=UTC).isoformat()
+        conn = self._conn()
+        with conn:
+            cursor = conn.execute(
+                """\
+                INSERT INTO summary_regenerations
+                    (
+                        run_id, summary_preset, summary_profile,
+                        status, error, updated_at
+                    )
+                VALUES (?, ?, ?, 'running', '', ?)
+                ON CONFLICT(run_id, summary_preset, summary_profile) DO UPDATE SET
+                    status = 'running',
+                    error = '',
+                    updated_at = excluded.updated_at
+                WHERE summary_regenerations.status != 'running'
+                """,
+                (run_id, summary_preset.strip(), summary_profile.strip(), now),
+            )
+        return cursor.rowcount == 1
+
+    def update_summary_regeneration_status(
+        self,
+        run_id: str,
+        *,
+        summary_preset: str,
+        summary_profile: str,
+        status: str,
+        error: str = "",
+    ) -> None:
+        conn = self._conn()
+        with conn:
+            conn.execute(
+                """\
+                UPDATE summary_regenerations
+                SET status = ?, error = ?, updated_at = ?
+                WHERE run_id = ? AND summary_preset = ? AND summary_profile = ?
+                """,
+                (
+                    status.strip() or "idle",
+                    error.strip(),
+                    datetime.now(tz=UTC).isoformat(),
+                    run_id,
+                    summary_preset.strip(),
+                    summary_profile.strip(),
+                ),
+            )
+
+    def list_bvids_missing_tid(self) -> list[str]:
+        """List distinct Bilibili video IDs whose history rows lack a tid."""
+        rows = (
+            self._conn()
+            .execute(
+                """\
+            SELECT bvid
+            FROM transcription_runs
+            WHERE tid <= 0 AND record_type = 'transcription'
+            GROUP BY lower(bvid)
+            ORDER BY min(created_at) ASC
+            """
+            )
+            .fetchall()
+        )
+        return [
+            bvid
+            for row in rows
+            if (bvid := str(row["bvid"] or "").strip())
+            and _BILIBILI_BVID_PATTERN.fullmatch(bvid)
+        ]
+
+    def update_tid_for_bvid(self, bvid: str, tid: int) -> int:
+        """Fill a positive tid into every missing history row for one BV ID."""
+        normalized_bvid = bvid.strip()
+        if not _BILIBILI_BVID_PATTERN.fullmatch(normalized_bvid):
+            raise ValueError(f"Invalid Bilibili BV ID: {bvid}")
+        if tid <= 0:
+            raise ValueError("tid must be positive")
+
+        conn = self._conn()
+        with conn:
+            cursor = conn.execute(
+                """\
+                UPDATE transcription_runs
+                SET tid = ?
+                WHERE lower(bvid) = lower(?) AND tid <= 0
+                """,
+                (tid, normalized_bvid),
+            )
+        return max(0, cursor.rowcount)
 
     def upsert_stock_statuses(
         self,
@@ -581,6 +874,61 @@ class HistoryDB:
         ).fetchall()
         return [str(r["author"]) for r in rows]
 
+    def list_history_category_counts(self) -> list[tuple[int, int]]:
+        """Return populated Bilibili tids and their transcription row counts."""
+        rows = (
+            self._conn()
+            .execute(
+                """\
+            SELECT tid, COUNT(*) AS count
+            FROM transcription_runs
+            WHERE record_type = 'transcription' AND tid > 0
+            GROUP BY tid
+            ORDER BY tid ASC
+            """
+            )
+            .fetchall()
+        )
+        return [(int(row["tid"]), int(row["count"])) for row in rows]
+
+    def list_history_author_counts(self) -> list[tuple[str, int]]:
+        """Return populated authors and their transcription row counts."""
+        rows = (
+            self._conn()
+            .execute(
+                """\
+            SELECT author, COUNT(*) AS count
+            FROM transcription_runs
+            WHERE record_type = 'transcription' AND trim(author) != ''
+            GROUP BY author
+            ORDER BY count DESC, author ASC
+            """
+            )
+            .fetchall()
+        )
+        return [
+            (str(row["author"]), int(row["count"]))
+            for row in rows
+            if str(row["author"] or "").strip()
+        ]
+
+    def list_history_platform_counts(self) -> list[tuple[str, int]]:
+        """Return supported history platforms and their row counts."""
+        conn = self._conn()
+        counts: list[tuple[str, int]] = []
+        for platform, condition in _HISTORY_PLATFORM_SQL.items():
+            row = conn.execute(
+                f"""\
+                SELECT COUNT(*) AS count
+                FROM transcription_runs
+                WHERE {condition}
+                """
+            ).fetchone()
+            count = int(row["count"] or 0) if row else 0
+            if count > 0:
+                counts.append((platform, count))
+        return counts
+
     def get_run_ids_for_authors(self, authors: list[str]) -> list[str]:
         """Return all run_ids whose author is in the given list."""
         if not authors:
@@ -665,7 +1013,7 @@ class HistoryDB:
         # Get artifacts before deleting
         artifact_rows = conn.execute(
             """\
-            SELECT kind, filename, storage_key, backend, summary_preset, summary_profile
+            SELECT kind, filename, storage_key, backend, derived_from, summary_preset, summary_profile
             FROM transcription_artifacts
             WHERE run_id = ?
             """,
@@ -678,6 +1026,7 @@ class HistoryDB:
                 filename=r["filename"],
                 storage_key=r["storage_key"],
                 backend=r["backend"],
+                derived_from=r["derived_from"],
                 summary_preset=r["summary_preset"],
                 summary_profile=r["summary_profile"],
             )
@@ -776,32 +1125,36 @@ def build_history_artifacts(
     summary_profile: str | None = None,
 ) -> list[HistoryArtifact]:
     """Convert stored artifacts to history rows."""
-    summary_kinds = {
-        "summary",
-        "summary_text",
-        "summary_fancy_html",
-        "summary_png",
-        "summary_no_table_png",
-        "summary_table_md",
-        "summary_table_png",
-        "summary_table_pdf",
-        "summary_timeline",
-    }
     cleaned_preset = (summary_preset or "").strip()
     cleaned_profile = (summary_profile or "").strip()
-
-    return [
-        HistoryArtifact(
-            kind=kind,
-            filename=artifact.filename,
-            storage_key=artifact.storage_key,
-            backend=artifact.backend,
-            summary_preset=cleaned_preset if kind in summary_kinds else "",
-            summary_profile=cleaned_profile if kind in summary_kinds else "",
+    markdown = results.get("markdown")
+    summary = results.get("summary")
+    artifacts: list[HistoryArtifact] = []
+    for result_key, artifact in results.items():
+        kind = resolve_artifact_kind(artifact.kind or result_key, artifact.filename)
+        derived_from = artifact.derived_from.strip()
+        if not derived_from and kind == ArtifactKind.SUMMARY and markdown is not None:
+            derived_from = markdown.storage_key
+        elif (
+            not derived_from and kind in SUMMARY_ARTIFACT_KINDS and summary is not None
+        ):
+            derived_from = summary.storage_key
+        artifacts.append(
+            HistoryArtifact(
+                kind=kind,
+                filename=artifact.filename,
+                storage_key=artifact.storage_key,
+                backend=artifact.backend,
+                derived_from=derived_from,
+                summary_preset=(artifact.summary_preset or cleaned_preset).strip()
+                if kind in SUMMARY_ARTIFACT_KINDS
+                else "",
+                summary_profile=(artifact.summary_profile or cleaned_profile).strip()
+                if kind in SUMMARY_ARTIFACT_KINDS
+                else "",
+            )
         )
-        for artifact in results.values()
-        for kind in [classify_artifact_filename(artifact.filename) or "file"]
-    ]
+    return artifacts
 
 
 def record_pipeline_run(
@@ -809,8 +1162,10 @@ def record_pipeline_run(
     db: HistoryDB,
     bvid: str,
     results: Mapping[str, StoredArtifact],
+    title: str = "",
     author: str = "",
     pubdate: str = "",
+    tid: int = 0,
     created_at: str | None = None,
     summary_preset: str | None = None,
     summary_profile: str | None = None,
@@ -822,8 +1177,10 @@ def record_pipeline_run(
         db: History database instance
         bvid: Bilibili video BV ID
         results: Mapping of artifact keys to StoredArtifact
+        title: Full resource title, independent of the shortened artifact filename
         author: Video author name
         pubdate: Video publish date (YYYY-MM-DD HH:MM:SS format)
+        tid: Bilibili video partition ID
         created_at: Record creation timestamp (ISO format)
 
     Returns:
@@ -837,7 +1194,7 @@ def record_pipeline_run(
         return None
 
     run_id = infer_run_id(markdown.storage_key, bvid=bvid)
-    title = infer_title(markdown.filename, bvid=bvid)
+    record_title = title.strip() or infer_title(markdown.filename, bvid=bvid)
     artifacts = build_history_artifacts(
         file_results,
         summary_preset=summary_preset,
@@ -861,28 +1218,19 @@ def record_pipeline_run(
                 author = existing.author
             if not pubdate.strip():
                 pubdate = existing.pubdate
-    has_summary = any(
-        artifact.kind
-        in {
-            "summary",
-            "summary_text",
-            "summary_fancy_html",
-            "summary_png",
-            "summary_no_table_png",
-            "summary_table_md",
-            "summary_table_png",
-            "summary_table_pdf",
-            "summary_timeline",
-        }
-        for artifact in artifacts
-    )
+            if not title.strip() and existing.title.strip():
+                record_title = existing.title
+            if tid <= 0:
+                tid = existing.tid
+    has_summary = any(artifact.kind in SUMMARY_ARTIFACT_KINDS for artifact in artifacts)
 
     db.record_run(
         run_id=run_id,
         bvid=bvid,
-        title=title,
+        title=record_title,
         author=author,
         pubdate=pubdate,
+        tid=tid,
         created_at=created_at,
         has_summary=has_summary,
         artifacts=artifacts,

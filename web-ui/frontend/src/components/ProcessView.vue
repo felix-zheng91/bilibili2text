@@ -1,133 +1,77 @@
 <script setup>
-  import CustomSelect from './CustomSelect.vue'
-  import {
-    computed,
-    nextTick,
-    onBeforeUnmount,
-    onMounted,
-    ref,
-    watch
-  } from 'vue'
+  import { computed, onMounted, ref, watch } from 'vue'
   import { useRoute, useRouter } from 'vue-router'
-  import {
-    AlertCircle,
-    ArrowLeft,
-    CheckCircle2,
-    ChevronDown,
-    FileAudio2,
-    FileVideo2,
-    Link2,
-    LoaderCircle
-  } from 'lucide-vue-next'
+  import { ArrowLeft, LoaderCircle } from 'lucide-vue-next'
   import ProgressPanel from './ProgressPanel.vue'
-  import FileList from './FileList.vue'
+  import CustomSelect from './CustomSelect.vue'
+  import InlineNotice from './common/InlineNotice.vue'
+  import ProcessJobOutput from './process/ProcessJobOutput.vue'
+  import ProcessSourceInput from './process/ProcessSourceInput.vue'
+  import ProcessSummaryConfig from './process/ProcessSummaryConfig.vue'
+  import ProcessVideoMetadata from './process/ProcessVideoMetadata.vue'
+  import { processApi, sttApi } from '../api'
+  import { useJobStore } from '../composables/useJobStore'
+  import { usePublicCredentials } from '../composables/usePublicCredentials'
+  import { useRuntimeFeatures } from '../composables/useRuntimeFeatures'
+  import { requestJobNotificationPermission } from '../composables/useJobNotifications'
+  import {
+    CUSTOM_SUMMARY_PRESET_VALUE,
+    useSummaryConfig,
+    withCustomSummaryPreset
+  } from '../composables/useSummaryConfig'
   import { inferSummaryPresetFromFilename } from '../utils/fileUtils'
 
   const route = useRoute()
   const router = useRouter()
-
-  const props = defineProps({
-    summaryPresets: {
-      type: Array,
-      required: true
-    },
-    summaryDefaultPreset: {
-      type: String,
-      required: true
-    },
-    summaryDefaultPromptTemplate: {
-      type: String,
-      default: ''
-    },
-    selectedSummaryPreset: {
-      type: String,
-      required: true
-    },
-    summaryProfiles: {
-      type: Array,
-      required: true
-    },
-    selectedSummaryProfile: {
-      type: String,
-      required: true
-    },
-    summaryPresetError: {
-      type: String,
-      default: ''
-    },
-    summaryProfileError: {
-      type: String,
-      default: ''
-    },
-    isLoadingSummaryPresets: {
-      type: Boolean,
-      default: false
-    },
-    isLoadingSummaryProfiles: {
-      type: Boolean,
-      default: false
-    },
-    sttProfiles: {
-      type: Array,
-      default: () => []
-    },
-    selectedSttProfile: {
-      type: String,
-      default: ''
-    },
-    isLoadingSttProfiles: {
-      type: Boolean,
-      default: false
-    },
-    sttProfileError: {
-      type: String,
-      default: ''
-    },
-    allowUpload: {
-      type: Boolean,
-      default: true
-    },
-    requiresApiKey: {
-      type: Boolean,
-      default: false
-    },
-    apiKeyConfigured: {
-      type: Boolean,
-      default: true
-    },
-    deepseekApiKeyConfigured: {
-      type: Boolean,
-      default: false
-    },
-    customLlmConfigured: {
-      type: Boolean,
-      default: false
-    }
-  })
-
-  const emit = defineEmits([
-    'update:selectedSummaryPreset',
-    'update:selectedSummaryProfile',
-    'update:selectedSttProfile',
-    'loadSummaryPresets',
-    'loadSummaryProfiles',
-    'loadSttProfiles'
-  ])
+  const {
+    connectionNotice,
+    getJob: getStoredJob,
+    loadJob,
+    trackJob,
+    untrackJob
+  } = useJobStore()
+  const { runtimeFeatures } = useRuntimeFeatures()
+  const allowUpload = computed(() => runtimeFeatures.value.allow_upload_audio)
+  const requiresApiKey = computed(
+    () => runtimeFeatures.value.requires_user_api_key
+  )
+  const {
+    summaryPresets,
+    summaryDefaultPromptTemplate,
+    summaryProfiles,
+    selectedSummaryPreset,
+    selectedSummaryProfile,
+    summaryPresetError,
+    summaryProfileError,
+    isLoadingSummaryPresets,
+    isLoadingSummaryProfiles,
+    loadSummaryPresets,
+    loadSummaryProfiles
+  } = useSummaryConfig()
+  const {
+    apiKeyConfigured,
+    deepseekApiKeyConfigured,
+    customLlmConfigured,
+    getApiKey,
+    getDeepseekApiKey,
+    getSummaryTemplate,
+    getCustomLlmPayload,
+    appendCustomLlmFormData
+  } = usePublicCredentials()
 
   const url = ref('')
   const error = ref('')
   const inputMode = ref('url')
   const uploadedAudioFile = ref(null)
-  const uploadFileInput = ref(null)
   const enableSummary = ref(true)
   const preferBilibiliSubtitle = ref(true)
   const autoGenerateFancyHtml = ref(false)
+  const includeComments = ref(true)
+  const commentLimit = ref(200)
+  const downloadAllComments = ref(false)
   const currentSkipSummary = ref(false)
   const isStarting = ref(false)
-  const isPolling = ref(false)
-  const pollErrorCount = ref(0)
   const jobId = ref('')
-  const logsViewport = ref(null)
   const job = ref({
     status: 'idle',
     stage: 'queued',
@@ -161,23 +105,20 @@
     author: '',
     pubdate: '',
     bvid: '',
+    title: '',
+    duration_seconds: 0,
+    tname: '',
+    parent_tname: '',
+    comment_status: 'disabled',
+    comment_limit: 200,
+    comment_count: 0,
+    comment_reply_count: 0,
+    history_run_id: '',
     is_ephemeral_upload: false,
     expires_at: ''
   })
 
-  let pollTimer = null
   let lastRenderedJobSignature = ''
-  const maxPollErrors = 3
-  const ACTIVE_JOB_IDS_KEY = 'b2t.active-job-ids'
-  const LOCAL_API_KEY_KEY = 'b2t.public-api-key'
-  const LOCAL_DEEPSEEK_API_KEY_KEY = 'b2t.public-deepseek-api-key'
-  const LOCAL_CUSTOM_LLM_BASE_URL_KEY = 'b2t.public-custom-llm-base-url'
-  const LOCAL_CUSTOM_LLM_API_KEY_KEY = 'b2t.public-custom-llm-api-key'
-  const LOCAL_CUSTOM_LLM_MODEL_KEY = 'b2t.public-custom-llm-model'
-  const LOCAL_OPEN_PUBLIC_SUMMARY_TEMPLATE_KEY =
-    'b2t.open-public-summary-template'
-  const CUSTOM_SUMMARY_PRESET_VALUE = '__user_custom__'
-  const CUSTOM_LLM_PROFILE_NAME = 'open_public_custom_llm'
   const uploadAccept =
     '.aac,.flac,.m4a,.mp3,.ogg,.opus,.wav,.webm,.avi,.m4v,.mkv,.mov,.mp4'
   const uploadFilenamePattern =
@@ -185,26 +126,51 @@
   const openPublicUploadPattern =
     /\.(aac|flac|m4a|mp3|ogg|opus|wav|webm|avi|m4v|mkv|mov|mp4)$/i
   const userSummaryPromptTemplate = ref('')
-  const summaryPresetDropdownRef = ref(null)
-  const isSummaryPresetMenuOpen = ref(false)
-  const hoveredSummaryPresetName = ref('')
+
+  // ─── STT configuration state (语音识别引擎选择) ────────────────────
+  const sttProfiles = ref([])
+  const selectedSttProfile = ref('')
+  const sttProfileError = ref('')
+  const isLoadingSttProfiles = ref(false)
+
+  const formatSttProfileLabel = (profile) => {
+    if (!profile) return ''
+    return `${profile.name} (${profile.provider}/${profile.model})`
+  }
+
+  const loadSttProfiles = async () => {
+    isLoadingSttProfiles.value = true
+    sttProfileError.value = ''
+    try {
+      const data = await sttApi.getProfiles()
+      const profiles = Array.isArray(data.profiles) ? data.profiles : []
+      sttProfiles.value = profiles
+      if (profiles.length === 0) {
+        selectedSttProfile.value = ''
+        return
+      }
+      const fallback = profiles[0].name
+      selectedSttProfile.value =
+        data.selected_profile || data.default_profile || fallback
+    } catch (err) {
+      console.error(err)
+      sttProfiles.value = []
+      selectedSttProfile.value = ''
+      sttProfileError.value =
+        err instanceof Error
+          ? `STT 配置加载失败：${err.message}`
+          : 'STT 配置加载失败，请检查后端服务是否已启动'
+    } finally {
+      isLoadingSttProfiles.value = false
+    }
+  }
 
   // Job from route param
   const routeJobId = computed(() => String(route.params.jobId || ''))
   const isJobDetailMode = computed(() => !!routeJobId.value)
-  const isOpenPublic = computed(() => props.requiresApiKey)
+  const isOpenPublic = requiresApiKey
   const presetOptions = computed(() => {
-    const base = Array.isArray(props.summaryPresets) ? props.summaryPresets : []
-    if (!isOpenPublic.value) {
-      return base
-    }
-    return [
-      ...base,
-      {
-        name: CUSTOM_SUMMARY_PRESET_VALUE,
-        label: '用户自定义'
-      }
-    ]
+    return withCustomSummaryPreset(summaryPresets.value, isOpenPublic.value)
   })
   const effectiveSummaryPromptTemplate = computed(() => {
     if (!enableSummary.value) {
@@ -213,209 +179,26 @@
     if (!isOpenPublic.value) {
       return ''
     }
-    if (props.selectedSummaryPreset !== CUSTOM_SUMMARY_PRESET_VALUE) {
+    if (selectedSummaryPreset.value !== CUSTOM_SUMMARY_PRESET_VALUE) {
       return ''
     }
     return userSummaryPromptTemplate.value.trim()
   })
-  const selectedSummaryPresetOption = computed(
-    () =>
-      presetOptions.value.find(
-        (item) => item.name === props.selectedSummaryPreset
-      ) ||
-      presetOptions.value[0] ||
-      null
-  )
-  const previewedSummaryPresetName = computed(
-    () =>
-      hoveredSummaryPresetName.value ||
-      selectedSummaryPresetOption.value?.name ||
-      ''
-  )
-  const previewedSummaryPresetOption = computed(
-    () =>
-      presetOptions.value.find(
-        (item) => item.name === previewedSummaryPresetName.value
-      ) ||
-      selectedSummaryPresetOption.value ||
-      null
-  )
 
-  const buildSummaryPresetPreviewText = (template) => {
-    const normalized = String(template || '')
-      .replace(/\r\n/g, '\n')
-      .split('\n')
-      .map((line) => line.replace(/[^\S\n]+/g, ' ').trim())
-      .join('\n')
-      .trim()
-
-    if (!normalized) {
-      return '此模板暂无可预览内容。'
-    }
-
-    return normalized
-  }
-
-  const getSummaryPresetPromptTemplate = (presetName) => {
-    if (presetName === CUSTOM_SUMMARY_PRESET_VALUE) {
-      return (
-        userSummaryPromptTemplate.value.trim() ||
-        props.summaryDefaultPromptTemplate ||
-        ''
-      )
-    }
-
-    const matched = props.summaryPresets.find(
-      (item) => item.name === presetName
-    )
-    return typeof matched?.prompt_template === 'string'
-      ? matched.prompt_template
-      : ''
-  }
-
-  const previewedSummaryPresetText = computed(() =>
-    buildSummaryPresetPreviewText(
-      getSummaryPresetPromptTemplate(
-        previewedSummaryPresetOption.value?.name || ''
-      )
-    )
-  )
-
-  // Multi-job localStorage helpers (shared with HistoryView for active job tracking)
-  const readActiveJobIds = () => {
-    try {
-      const raw = window.localStorage.getItem(ACTIVE_JOB_IDS_KEY)
-      if (!raw) return []
-      const parsed = JSON.parse(raw)
-      return Array.isArray(parsed)
-        ? parsed.filter((id) => typeof id === 'string' && id)
-        : []
-    } catch {
-      return []
-    }
-  }
-
-  const addActiveJobId = (id) => {
-    try {
-      const ids = readActiveJobIds()
-      if (!ids.includes(id)) {
-        ids.push(id)
-        window.localStorage.setItem(ACTIVE_JOB_IDS_KEY, JSON.stringify(ids))
-      }
-    } catch {}
-  }
-
-  const removeActiveJobId = (id) => {
-    try {
-      const ids = readActiveJobIds().filter((i) => i !== id)
-      window.localStorage.setItem(ACTIVE_JOB_IDS_KEY, JSON.stringify(ids))
-    } catch {}
-  }
-
-  const clearActiveJobId = () => {
-    if (jobId.value) removeActiveJobId(jobId.value)
-    jobId.value = ''
-  }
-
-  const parseJsonSafely = async (resp, fallbackMessage) => {
-    const raw = await resp.text()
-    if (!raw) {
+  const normalizedCommentLimit = computed(() => {
+    if (downloadAllComments.value) {
       return null
     }
-    try {
-      return JSON.parse(raw)
-    } catch {
-      throw new Error(
-        `${fallbackMessage}（服务返回了非 JSON 响应，HTTP ${resp.status}）`
-      )
+    const parsed = Number(commentLimit.value)
+    if (!Number.isFinite(parsed)) {
+      return 200
     }
-  }
+    return Math.min(1000, Math.max(1, Math.floor(parsed)))
+  })
 
-  const pickApiError = (resp, data, fallbackMessage) => {
-    if (
-      data &&
-      typeof data === 'object' &&
-      typeof data.detail === 'string' &&
-      data.detail.trim()
-    ) {
-      return data.detail
-    }
-    return `${fallbackMessage}（HTTP ${resp.status}）`
-  }
-
-  const getLocalApiKey = () => {
-    try {
-      return (window.localStorage.getItem(LOCAL_API_KEY_KEY) || '').trim()
-    } catch {
-      return ''
-    }
-  }
-
-  const getLocalDeepseekApiKey = () => {
-    try {
-      return (
-        window.localStorage.getItem(LOCAL_DEEPSEEK_API_KEY_KEY) || ''
-      ).trim()
-    } catch {
-      return ''
-    }
-  }
-
-  const getLocalCustomLlmConfig = () => {
-    try {
-      return {
-        baseUrl: (
-          window.localStorage.getItem(LOCAL_CUSTOM_LLM_BASE_URL_KEY) || ''
-        ).trim(),
-        apiKey: (
-          window.localStorage.getItem(LOCAL_CUSTOM_LLM_API_KEY_KEY) || ''
-        ).trim(),
-        model: (
-          window.localStorage.getItem(LOCAL_CUSTOM_LLM_MODEL_KEY) || ''
-        ).trim()
-      }
-    } catch {
-      return { baseUrl: '', apiKey: '', model: '' }
-    }
-  }
-
-  const formatSummaryProfileLabel = (profile) => {
-    if (!profile) return ''
-    if (profile.name === CUSTOM_LLM_PROFILE_NAME) {
-      return `custom(${profile.model || 'model'})`
-    }
-    return `${profile.name} (${profile.model})`
-  }
-
-  const formatSttProfileLabel = (profile) => {
-    if (!profile) return ''
-    return `${profile.name} (${profile.provider}/${profile.model})`
-  }
-
-  const appendCustomLlmFormData = (formData) => {
-    if (!props.requiresApiKey) return
-    const customLlm = getLocalCustomLlmConfig()
-    if (customLlm.baseUrl && customLlm.apiKey && customLlm.model) {
-      formData.append('custom_llm_base_url', customLlm.baseUrl)
-      formData.append('custom_llm_api_key', customLlm.apiKey)
-      formData.append('custom_llm_model', customLlm.model)
-    }
-  }
-
-  const getCustomLlmPayload = () => {
-    if (!props.requiresApiKey) {
-      return {
-        custom_llm_base_url: null,
-        custom_llm_api_key: null,
-        custom_llm_model: null
-      }
-    }
-    const customLlm = getLocalCustomLlmConfig()
-    return {
-      custom_llm_base_url: customLlm.baseUrl || null,
-      custom_llm_api_key: customLlm.apiKey || null,
-      custom_llm_model: customLlm.model || null
-    }
+  const clearActiveJobId = () => {
+    if (jobId.value) untrackJob(jobId.value)
+    jobId.value = ''
   }
 
   const loadLocalSummaryPromptTemplate = () => {
@@ -423,16 +206,9 @@
       userSummaryPromptTemplate.value = ''
       return
     }
-    try {
-      const stored = (
-        window.localStorage.getItem(LOCAL_OPEN_PUBLIC_SUMMARY_TEMPLATE_KEY) ||
-        ''
-      ).trim()
-      userSummaryPromptTemplate.value =
-        stored || props.summaryDefaultPromptTemplate || ''
-    } catch {
-      userSummaryPromptTemplate.value = props.summaryDefaultPromptTemplate || ''
-    }
+    userSummaryPromptTemplate.value = getSummaryTemplate(
+      summaryDefaultPromptTemplate.value
+    )
   }
 
   const isRunning = computed(
@@ -451,20 +227,22 @@
     return currentSkipSummary.value
   })
   const isUploadMode = computed(
-    () => props.allowUpload && inputMode.value === 'upload'
+    () => allowUpload.value && inputMode.value === 'upload'
   )
+  const inputBvid = computed(() => {
+    const currentBvid = String(job.value.bvid || '').trim()
+    if (currentBvid) return currentBvid
+    return String(url.value || '').match(/BV[0-9A-Za-z]{10}/i)?.[0] || ''
+  })
 
   watch(
-    () => props.allowUpload,
+    allowUpload,
     (allowUpload) => {
       if (allowUpload || inputMode.value !== 'upload') {
         return
       }
       inputMode.value = 'url'
       uploadedAudioFile.value = null
-      if (uploadFileInput.value) {
-        uploadFileInput.value.value = ''
-      }
     },
     { immediate: true }
   )
@@ -481,17 +259,10 @@
       presetName:
         job.value.summary_preset ||
         inferSummaryPresetFromFilename(item.filename) ||
-        props.selectedSummaryPreset,
-      summaryProfile: job.value.summary_profile || props.selectedSummaryProfile
+        selectedSummaryPreset.value,
+      summaryProfile: job.value.summary_profile || selectedSummaryProfile.value
     }))
   })
-
-  const stopPolling = () => {
-    if (pollTimer !== null) {
-      clearInterval(pollTimer)
-      pollTimer = null
-    }
-  }
 
   const getLogSignature = (logs) => {
     if (!Array.isArray(logs) || logs.length === 0) {
@@ -549,16 +320,17 @@
       payload.pubdate || '',
       payload.bvid || '',
       payload.title || '',
+      payload.duration_seconds || 0,
+      payload.tname || '',
+      payload.parent_tname || '',
+      payload.comment_status || '',
+      payload.comment_limit ?? '',
+      payload.comment_count || 0,
+      payload.comment_reply_count || 0,
+      payload.history_run_id || '',
       payload.is_ephemeral_upload ? '1' : '0',
       payload.expires_at || ''
     ].join('\u001f')
-
-  const syncLogScroll = () => {
-    if (logsViewport.value === null) {
-      return
-    }
-    logsViewport.value.scrollTop = logsViewport.value.scrollHeight
-  }
 
   const resetJob = () => {
     lastRenderedJobSignature = ''
@@ -580,6 +352,7 @@
       summary_table_pdf_filename: '',
       summary_preset: '',
       summary_profile: '',
+      stt_profile: '',
       auto_generate_fancy_html: false,
       fancy_html_status: 'idle',
       fancy_html_error: '',
@@ -595,17 +368,18 @@
       author: '',
       pubdate: '',
       bvid: '',
+      title: '',
+      duration_seconds: 0,
+      tname: '',
+      parent_tname: '',
+      comment_status: 'disabled',
+      comment_limit: 200,
+      comment_count: 0,
+      comment_reply_count: 0,
+      history_run_id: '',
       is_ephemeral_upload: false,
       expires_at: ''
     }
-  }
-
-  const setInputMode = (mode) => {
-    if (mode === 'upload' && !props.allowUpload) {
-      return
-    }
-    inputMode.value = mode
-    error.value = ''
   }
 
   const onUploadFileChange = (event) => {
@@ -634,170 +408,97 @@
     return ''
   }
 
-  const openSummaryPresetMenu = () => {
-    if (props.isLoadingSummaryPresets || presetOptions.value.length === 0) {
-      return
-    }
-    hoveredSummaryPresetName.value = props.selectedSummaryPreset || ''
-    isSummaryPresetMenuOpen.value = true
-  }
-
-  const closeSummaryPresetMenu = () => {
-    isSummaryPresetMenuOpen.value = false
-    hoveredSummaryPresetName.value = ''
-  }
-
-  const toggleSummaryPresetMenu = () => {
-    if (isSummaryPresetMenuOpen.value) {
-      closeSummaryPresetMenu()
-      return
-    }
-    openSummaryPresetMenu()
-  }
-
-  const previewSummaryPreset = (presetName) => {
-    hoveredSummaryPresetName.value = presetName
-  }
-
-  const selectSummaryPreset = (presetName) => {
-    emit('update:selectedSummaryPreset', presetName)
-    closeSummaryPresetMenu()
-  }
-
-  const onDocumentPointerDown = (event) => {
-    if (!isSummaryPresetMenuOpen.value) {
-      return
-    }
-    if (summaryPresetDropdownRef.value?.contains(event.target)) {
-      return
-    }
-    closeSummaryPresetMenu()
-  }
-
-  const pollStatus = async () => {
-    if (!jobId.value || isPolling.value) {
-      return
-    }
-
-    isPolling.value = true
-    try {
-      const resp = await fetch(`/api/process/${jobId.value}`)
-      const data = await parseJsonSafely(resp, '获取任务进度失败')
-
-      if (!resp.ok) {
-        if (resp.status === 404) {
-          clearActiveJobId()
-          stopPolling()
-        }
-        throw new Error(pickApiError(resp, data, '获取任务进度失败'))
-      }
-      if (!data || typeof data !== 'object') {
-        throw new Error('获取任务进度失败（服务返回空响应）')
-      }
-
-      const previousLogCount = Array.isArray(job.value.logs)
-        ? job.value.logs.length
-        : 0
-      const nextRenderSignature = getJobRenderSignature(data)
-      const shouldRenderJob = nextRenderSignature !== lastRenderedJobSignature
-      if (shouldRenderJob) {
-        job.value = data
-        lastRenderedJobSignature = nextRenderSignature
-        currentSkipSummary.value = Boolean(data.skip_summary)
-        if (
-          isOpenPublic.value &&
-          typeof data.summary_prompt_template === 'string' &&
-          data.summary_prompt_template.trim()
-        ) {
-          userSummaryPromptTemplate.value = data.summary_prompt_template
-        }
-      }
-      pollErrorCount.value = 0
-      error.value = ''
-      const currentLogCount = Array.isArray(data.logs) ? data.logs.length : 0
-      if (shouldRenderJob && currentLogCount !== previousLogCount) {
-        nextTick(syncLogScroll)
-      }
-
-      if (data.status === 'failed') {
-        error.value = data.error || '处理失败'
-        clearActiveJobId()
-        stopPolling()
-      } else if (data.status === 'cancelled') {
-        error.value = data.error || '任务已取消'
-        clearActiveJobId()
-        stopPolling()
-      } else if (
-        data.status === 'succeeded' &&
-        !(
-          data.auto_generate_fancy_html &&
-          ['pending', 'running'].includes(data.fancy_html_status || '')
-        )
+  const applyJobUpdate = (data) => {
+    const previousLogCount = Array.isArray(job.value.logs)
+      ? job.value.logs.length
+      : 0
+    const nextRenderSignature = getJobRenderSignature(data)
+    const shouldRenderJob = nextRenderSignature !== lastRenderedJobSignature
+    if (shouldRenderJob) {
+      job.value = data
+      lastRenderedJobSignature = nextRenderSignature
+      currentSkipSummary.value = Boolean(data.skip_summary)
+      if (
+        isOpenPublic.value &&
+        typeof data.summary_prompt_template === 'string' &&
+        data.summary_prompt_template.trim()
       ) {
-        clearActiveJobId()
-        stopPolling()
+        userSummaryPromptTemplate.value = data.summary_prompt_template
       }
-    } catch (err) {
-      pollErrorCount.value += 1
-      const message = err instanceof Error ? err.message : '获取任务进度失败'
-      if (pollErrorCount.value >= maxPollErrors) {
-        error.value = message
-        stopPolling()
-      } else {
-        error.value = `${message}，正在重试（${pollErrorCount.value}/${maxPollErrors}）`
-      }
-    } finally {
-      isPolling.value = false
     }
+    error.value = ''
+    const currentLogCount = Array.isArray(data.logs) ? data.logs.length : 0
+    if (shouldRenderJob && currentLogCount !== previousLogCount) {
+    }
+
+    if (data.status === 'failed') {
+      error.value = data.error || '处理失败'
+      return false
+    } else if (data.status === 'cancelled') {
+      error.value = data.error || '任务已取消'
+      return false
+    } else if (
+      data.status === 'succeeded' &&
+      !(
+        data.auto_generate_fancy_html &&
+        ['pending', 'running'].includes(data.fancy_html_status || '')
+      )
+    ) {
+      return false
+    }
+    return true
   }
 
   const submit = async () => {
     isStarting.value = true
     error.value = ''
-    stopPolling()
     clearActiveJobId()
     resetJob()
 
     try {
-      if (props.requiresApiKey && !props.apiKeyConfigured) {
+      if (requiresApiKey.value && !apiKeyConfigured.value) {
         throw new Error('请先在「API Key」页面配置阿里云 DashScope API Key')
       }
       if (
         enableSummary.value &&
-        props.selectedSummaryPreset === CUSTOM_SUMMARY_PRESET_VALUE &&
+        selectedSummaryPreset.value === CUSTOM_SUMMARY_PRESET_VALUE &&
         !effectiveSummaryPromptTemplate.value
       ) {
         throw new Error(
           '请先在「API Key」页面保存自定义总结模板，再选择“用户自定义”模板'
         )
       }
-
-      const skipSummary = !enableSummary.value
-      currentSkipSummary.value = skipSummary
-      pollErrorCount.value = 0
-
-      let resp
       if (isUploadMode.value) {
-        if (!props.allowUpload) {
-          throw new Error('当前模式不允许上传音频，请改为输入视频 URL 或 BV 号')
+        if (!allowUpload.value) {
+          throw new Error('当前模式不允许上传音频，请改为输入播客/视频链接')
         }
         const validationMessage = validateUploadedAudio(uploadedAudioFile.value)
         if (validationMessage) {
           throw new Error(validationMessage)
         }
+      } else if (!url.value.trim()) {
+        throw new Error('请输入播客链接或视频 URL')
+      }
+
+      const skipSummary = !enableSummary.value
+      currentSkipSummary.value = skipSummary
+      requestJobNotificationPermission()
+
+      let data
+      if (isUploadMode.value) {
         const formData = new FormData()
         formData.append('file', uploadedAudioFile.value)
         formData.append('skip_summary', String(skipSummary))
         if (
           !skipSummary &&
-          props.selectedSummaryPreset &&
-          (props.selectedSummaryPreset !== CUSTOM_SUMMARY_PRESET_VALUE ||
+          selectedSummaryPreset.value &&
+          (selectedSummaryPreset.value !== CUSTOM_SUMMARY_PRESET_VALUE ||
             effectiveSummaryPromptTemplate.value)
         ) {
-          formData.append('summary_preset', props.selectedSummaryPreset)
+          formData.append('summary_preset', selectedSummaryPreset.value)
         }
-        if (!skipSummary && props.selectedSummaryProfile) {
-          formData.append('summary_profile', props.selectedSummaryProfile)
+        if (!skipSummary && selectedSummaryProfile.value) {
+          formData.append('summary_profile', selectedSummaryProfile.value)
         }
         if (!skipSummary && effectiveSummaryPromptTemplate.value) {
           formData.append(
@@ -811,76 +512,52 @@
             String(autoGenerateFancyHtml.value)
           )
         }
-        if (props.requiresApiKey) {
-          formData.append('api_key', getLocalApiKey())
-          const dsKey = getLocalDeepseekApiKey()
+        if (requiresApiKey.value) {
+          formData.append('api_key', getApiKey())
+          const dsKey = getDeepseekApiKey()
           if (dsKey) formData.append('deepseek_api_key', dsKey)
-          appendCustomLlmFormData(formData)
+          appendCustomLlmFormData(formData, true)
         }
-        if (props.selectedSttProfile) {
-          formData.append('stt_profile', props.selectedSttProfile)
+        if (selectedSttProfile.value) {
+          formData.append('stt_profile', selectedSttProfile.value)
         }
-        resp = await fetch('/api/process/upload', {
-          method: 'POST',
-          body: formData
-        })
+        data = await processApi.startFromUpload(formData)
       } else {
-        if (!url.value.trim()) {
-          throw new Error('请输入 bilibili 视频 URL 或 BV 号')
-        }
-        resp = await fetch('/api/process', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            url: url.value.trim(),
-            skip_summary: skipSummary,
-            summary_preset:
-              skipSummary || !props.selectedSummaryPreset
-                ? null
-                : props.selectedSummaryPreset,
-            summary_profile:
-              skipSummary || !props.selectedSummaryProfile
-                ? null
-                : props.selectedSummaryProfile,
-            summary_prompt_template:
-              skipSummary || !effectiveSummaryPromptTemplate.value
-                ? null
-                : effectiveSummaryPromptTemplate.value,
-            auto_generate_fancy_html: skipSummary
-              ? false
-              : autoGenerateFancyHtml.value,
-            prefer_bilibili_subtitle: preferBilibiliSubtitle.value,
-            stt_profile: props.selectedSttProfile || null,
-            api_key: props.requiresApiKey ? getLocalApiKey() : null,
-            deepseek_api_key: props.requiresApiKey
-              ? getLocalDeepseekApiKey() || null
-              : null,
-            ...getCustomLlmPayload()
-          })
+        data = await processApi.startFromUrl({
+          url: url.value.trim(),
+          skip_summary: skipSummary,
+          summary_preset:
+            skipSummary || !selectedSummaryPreset.value
+              ? null
+              : selectedSummaryPreset.value,
+          summary_profile:
+            skipSummary || !selectedSummaryProfile.value
+              ? null
+              : selectedSummaryProfile.value,
+          summary_prompt_template:
+            skipSummary || !effectiveSummaryPromptTemplate.value
+              ? null
+              : effectiveSummaryPromptTemplate.value,
+          auto_generate_fancy_html: skipSummary
+            ? false
+            : autoGenerateFancyHtml.value,
+          prefer_bilibili_subtitle: preferBilibiliSubtitle.value,
+          stt_profile: selectedSttProfile.value || null,
+          include_comments:
+            !skipSummary && includeComments.value && !isUploadMode.value,
+          comment_limit: normalizedCommentLimit.value,
+          api_key: requiresApiKey.value ? getApiKey() : null,
+          deepseek_api_key: requiresApiKey.value
+            ? getDeepseekApiKey() || null
+            : null,
+          ...getCustomLlmPayload(requiresApiKey.value)
         })
-      }
-
-      const data = await parseJsonSafely(resp, '提交任务失败')
-      if (!resp.ok) {
-        throw new Error(pickApiError(resp, data, '提交任务失败'))
-      }
-      if (
-        !data ||
-        typeof data !== 'object' ||
-        typeof data.job_id !== 'string' ||
-        !data.job_id
-      ) {
-        throw new Error('提交任务失败（服务未返回有效 job_id）')
       }
 
       jobId.value = data.job_id
-      addActiveJobId(data.job_id)
+      trackJob(data.job_id)
       // Navigate to the job detail URL
       await router.push(`/process/${data.job_id}`)
-      pollTimer = setInterval(pollStatus, 1200)
-      await pollStatus()
     } catch (err) {
       error.value = err instanceof Error ? err.message : '提交任务失败'
     } finally {
@@ -888,31 +565,43 @@
     }
   }
 
-  onMounted(async () => {
-    document.addEventListener('mousedown', onDocumentPointerDown)
+  onMounted(() => {
     loadLocalSummaryPromptTemplate()
-    if (!routeJobId.value) {
-      return
-    }
-
-    jobId.value = routeJobId.value
-    pollErrorCount.value = 0
-    await pollStatus()
-    if (
-      jobId.value &&
-      (job.value.status === 'queued' || job.value.status === 'running')
-    ) {
-      pollTimer = setInterval(pollStatus, 1200)
-    }
-  })
-
-  onBeforeUnmount(() => {
-    stopPolling()
-    document.removeEventListener('mousedown', onDocumentPointerDown)
+    void loadSttProfiles()
   })
 
   watch(
-    () => props.summaryDefaultPromptTemplate,
+    () => getStoredJob(jobId.value),
+    (data) => {
+      if (data) applyJobUpdate(data)
+    }
+  )
+
+  watch(
+    routeJobId,
+    async (nextJobId) => {
+      if (!nextJobId) {
+        jobId.value = ''
+        resetJob()
+        return
+      }
+      jobId.value = nextJobId
+      const cached = getStoredJob(nextJobId)
+      if (cached) applyJobUpdate(cached)
+      try {
+        const data = await loadJob(nextJobId)
+        if (routeJobId.value === nextJobId) applyJobUpdate(data)
+      } catch (err) {
+        if (routeJobId.value === nextJobId) {
+          error.value = err instanceof Error ? err.message : '获取任务进度失败'
+        }
+      }
+    },
+    { immediate: true }
+  )
+
+  watch(
+    summaryDefaultPromptTemplate,
     () => {
       if (!isOpenPublic.value) {
         return
@@ -920,442 +609,105 @@
       const hasLocalValue = userSummaryPromptTemplate.value.trim().length > 0
       if (!hasLocalValue) {
         userSummaryPromptTemplate.value =
-          props.summaryDefaultPromptTemplate || ''
+          summaryDefaultPromptTemplate.value || ''
       }
     },
     { immediate: true }
   )
 
   watch(
-    () => props.requiresApiKey,
+    requiresApiKey,
     () => {
       loadLocalSummaryPromptTemplate()
     },
     { immediate: true }
   )
-
-  watch(
-    () => props.selectedSummaryPreset,
-    () => {
-      if (!isSummaryPresetMenuOpen.value) {
-        return
-      }
-      hoveredSummaryPresetName.value = props.selectedSummaryPreset || ''
-    }
-  )
 </script>
 
 <template>
-  <div>
+  <div class="process-page">
     <section class="layout">
       <article class="panel panel-main">
-        <header class="header">
-          <h1 class="brand">
-            <img src="/favicon.svg" class="brand-logo" alt="" />
-            闻录
-          </h1>
-          <p>
-            {{
-              allowUpload
-                ? isOpenPublic
-                  ? '输入 B 站视频链接，或上传音频/视频生成临时转录和大模型总结。'
-                  : '输入 B 站视频链接，或上传符合命名规范的音频文件，自动生成转录内容和大模型总结。'
-                : '输入 B 站视频链接，自动生成转录内容和大模型总结。'
-            }}
-          </p>
-          <div class="hero-meta">
-            <span class="hero-pill">
-              {{ isRunning ? '处理中' : '准备就绪' }}
-            </span>
-            <span class="hero-pill hero-pill-soft">
-              总结{{ enableSummary ? '已开启' : '已关闭' }}
-            </span>
-            <span v-if="enableSummary" class="hero-pill hero-pill-soft">
-              Fancy HTML{{ autoGenerateFancyHtml ? '自动生成' : '手动生成' }}
-            </span>
-            <span
-              v-if="job.is_ephemeral_upload"
-              class="hero-pill hero-pill-soft"
-            >
-              临时结果 2 小时后删除
-            </span>
-          </div>
-        </header>
+        <div v-if="job.is_ephemeral_upload" class="hero-meta">
+          <span class="hero-pill">临时结果 2 小时后删除</span>
+        </div>
 
         <form class="form" @submit.prevent="submit">
-          <div class="input-mode-tabs">
-            <button
-              type="button"
-              class="input-mode-button"
-              :class="{ active: !isUploadMode }"
-              :disabled="isStarting || isRunning"
-              @click="setInputMode('url')"
-            >
-              <Link2 :size="15" />
-              <span>链接 / BV</span>
-            </button>
-            <button
-              v-if="allowUpload"
-              type="button"
-              class="input-mode-button"
-              :class="{ active: isUploadMode }"
-              :disabled="isStarting || isRunning"
-              @click="setInputMode('upload')"
-            >
-              <FileVideo2 v-if="isOpenPublic" :size="15" />
-              <FileAudio2 v-else :size="15" />
-              <span>{{ isOpenPublic ? '上传音频 / 视频' : '上传音频' }}</span>
-            </button>
+          <ProcessSourceInput
+            v-model:input-mode="inputMode"
+            v-model:url="url"
+            v-model:prefer-bilibili-subtitle="preferBilibiliSubtitle"
+            v-model:include-comments="includeComments"
+            v-model:download-all-comments="downloadAllComments"
+            v-model:comment-limit="commentLimit"
+            :allow-upload="allowUpload"
+            :is-open-public="isOpenPublic"
+            :disabled="isStarting || isRunning"
+            :upload-accept="uploadAccept"
+            @file-change="onUploadFileChange"
+          />
+
+          <div class="stt-inline">
+            <label for="stt-profile-select">语音识别引擎</label>
+            <div class="stt-select-wrap">
+              <CustomSelect
+                id="stt-profile-select"
+                :model-value="selectedSttProfile"
+                :options="
+                  sttProfiles.map((p) => ({
+                    value: p.name,
+                    label: formatSttProfileLabel(p)
+                  }))
+                "
+                :placeholder="
+                  isLoadingSttProfiles
+                    ? '正在加载语音识别配置...'
+                    : sttProfiles.length === 0
+                      ? '未获取到 STT 配置（将使用后端默认）'
+                      : ''
+                "
+                :disabled="isLoadingSttProfiles || sttProfiles.length === 0"
+                class="preset-select-custom"
+                @update:model-value="selectedSttProfile = $event"
+              />
+            </div>
+            <p v-if="sttProfileError" class="preset-hint preset-hint-error">
+              {{ sttProfileError }}
+              <button
+                class="preset-retry"
+                type="button"
+                @click="loadSttProfiles"
+              >
+                重试
+              </button>
+            </p>
+            <p v-else-if="sttProfiles.length === 0" class="preset-hint">
+              暂未连接到后端 STT 配置接口，提交时会使用服务端默认引擎。
+            </p>
           </div>
 
-          <template v-if="!isUploadMode">
-            <label for="video-url">视频 URL 或 BV 号</label>
-            <div class="input-row">
-              <Link2 :size="18" />
-              <input
-                id="video-url"
-                v-model="url"
-                type="text"
-                placeholder="https://www.bilibili.com/video/BV... 或 b23.tv/..."
-              />
-            </div>
-            <div class="input-example">
-              <span>示例：</span>
-              <a
-                href="https://www.bilibili.com/video/BV1R9i4BoE7H"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                https://www.bilibili.com/video/BV1R9i4BoE7H
-              </a>
-              <a
-                href="https://b23.tv/2cvz6sn"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                https://b23.tv/2cvz6sn
-              </a>
-              <span
-                >【第1173日投资记录：稍微回血，伊利业绩大放异彩，基本确定把蒙牛卖飞了……-哔哩哔哩】
-                https://b23.tv/2cvz6sn</span
-              >
-            </div>
-            <div class="stt-inline">
-              <label for="stt-profile-select">语音识别引擎</label>
-              <div class="summary-profile-select-wrap">
-                <CustomSelect
-                  id="stt-profile-select"
-                  :model-value="selectedSttProfile"
-                  @update:model-value="
-                    emit('update:selectedSttProfile', $event)
-                  "
-                  :options="
-                    sttProfiles.map((p) => ({
-                      value: p.name,
-                      label: formatSttProfileLabel(p)
-                    }))
-                  "
-                  :placeholder="
-                    isLoadingSttProfiles
-                      ? '正在加载语音识别配置...'
-                      : sttProfiles.length === 0
-                        ? '未获取到 STT 配置（将使用后端默认）'
-                        : ''
-                  "
-                  :disabled="isLoadingSttProfiles || sttProfiles.length === 0"
-                  class="preset-select-custom"
-                />
-              </div>
-              <p v-if="sttProfileError" class="preset-hint preset-hint-error">
-                {{ sttProfileError }}
-                <button
-                  class="preset-retry"
-                  type="button"
-                  @click="emit('loadSttProfiles')"
-                >
-                  重试
-                </button>
-              </p>
-              <p v-else-if="sttProfiles.length === 0" class="preset-hint">
-                暂未连接到后端 STT 配置接口，提交时会使用服务端默认引擎。
-              </p>
-            </div>
-            <label class="switch" for="prefer-bilibili-subtitle">
-              <input
-                id="prefer-bilibili-subtitle"
-                v-model="preferBilibiliSubtitle"
-                type="checkbox"
-              />
-              <span class="switch-track">
-                <span class="switch-thumb"></span>
-              </span>
-              <span class="switch-label">优先使用 B 站字幕</span>
-            </label>
-          </template>
-
-          <template v-else>
-            <label for="audio-file">
-              {{
-                isOpenPublic ? '音频或视频文件' : '音频文件（必需包含 BV 号）'
-              }}
-            </label>
-            <div class="upload-row">
-              <input
-                id="audio-file"
-                ref="uploadFileInput"
-                type="file"
-                :accept="uploadAccept"
-                @change="onUploadFileChange"
-              />
-            </div>
-            <p v-if="isOpenPublic" class="input-example">
-              上传结果不会进入历史记录，仅能通过当前任务链接访问，并会在完成后 2
-              小时自动删除。支持常见音频和视频格式。
-            </p>
-            <p v-else class="input-example">
-              文件名必须符合
-              <code>BV号_视频标题.xxx</code>
-              ，例如
-              <code>BV1R9i4BoE7H_视频标题.m4a</code>
-            </p>
-            <div class="stt-inline">
-              <label for="stt-profile-select-upload">语音识别引擎</label>
-              <div class="summary-profile-select-wrap">
-                <CustomSelect
-                  id="stt-profile-select-upload"
-                  :model-value="selectedSttProfile"
-                  @update:model-value="
-                    emit('update:selectedSttProfile', $event)
-                  "
-                  :options="
-                    sttProfiles.map((p) => ({
-                      value: p.name,
-                      label: formatSttProfileLabel(p)
-                    }))
-                  "
-                  :placeholder="
-                    isLoadingSttProfiles
-                      ? '正在加载语音识别配置...'
-                      : sttProfiles.length === 0
-                        ? '未获取到 STT 配置（将使用后端默认）'
-                        : ''
-                  "
-                  :disabled="isLoadingSttProfiles || sttProfiles.length === 0"
-                  class="preset-select-custom"
-                />
-              </div>
-              <p v-if="sttProfileError" class="preset-hint preset-hint-error">
-                {{ sttProfileError }}
-                <button
-                  class="preset-retry"
-                  type="button"
-                  @click="emit('loadSttProfiles')"
-                >
-                  重试
-                </button>
-              </p>
-              <p v-else-if="sttProfiles.length === 0" class="preset-hint">
-                暂未连接到后端 STT 配置接口，提交时会使用服务端默认引擎。
-              </p>
-            </div>
-          </template>
-
-          <label class="switch" for="enable-summary">
-            <input
-              id="enable-summary"
-              v-model="enableSummary"
-              type="checkbox"
-            />
-            <span class="switch-track">
-              <span class="switch-thumb"></span>
-            </span>
-            <span class="switch-label">启用 LLM 整理总结</span>
-          </label>
-
-          <div v-if="enableSummary" class="process-summary-config">
-            <div class="process-summary-head">
-              <h3>总结参数</h3>
-              <p>
-                选择模型配置与总结模板，生成更符合用途的总结内容。
-                <template v-if="isOpenPublic">
-                  选择“用户自定义”时，会使用你在 API Key 页面保存的模板。
-                </template>
-              </p>
-            </div>
-
-            <div class="process-summary-grid">
-              <div
-                class="summary-preset process-summary-field process-summary-toggle"
-              >
-                <label
-                  class="switch switch-compact"
-                  for="auto-generate-fancy-html"
-                >
-                  <input
-                    id="auto-generate-fancy-html"
-                    v-model="autoGenerateFancyHtml"
-                    type="checkbox"
-                  />
-                  <span class="switch-track">
-                    <span class="switch-thumb"></span>
-                  </span>
-                  <span class="switch-label"
-                    >总结完成后自动生成 Fancy HTML</span
-                  >
-                </label>
-                <p class="preset-hint">
-                  总结文件会先显示，Fancy HTML 稍后在后台生成并自动加入列表。
-                </p>
-              </div>
-
-              <div
-                class="summary-preset process-summary-field process-summary-inline-field"
-              >
-                <label for="summary-profile-select">模型配置</label>
-                <div class="summary-profile-select-wrap">
-                  <CustomSelect
-                    id="summary-profile-select"
-                    :model-value="selectedSummaryProfile"
-                    @update:model-value="
-                      emit('update:selectedSummaryProfile', $event)
-                    "
-                    :options="
-                      summaryProfiles.map((p) => ({
-                        value: p.name,
-                        label: formatSummaryProfileLabel(p)
-                      }))
-                    "
-                    :placeholder="
-                      isLoadingSummaryProfiles
-                        ? '正在加载模型配置...'
-                        : summaryProfiles.length === 0
-                          ? '未获取到模型配置（将使用后端默认）'
-                          : ''
-                    "
-                    :disabled="
-                      isLoadingSummaryProfiles || summaryProfiles.length === 0
-                    "
-                    class="preset-select-custom"
-                  />
-                </div>
-                <p
-                  v-if="summaryProfileError"
-                  class="preset-hint preset-hint-error"
-                >
-                  {{ summaryProfileError }}
-                  <button
-                    class="preset-retry"
-                    type="button"
-                    @click="emit('loadSummaryProfiles')"
-                  >
-                    重试
-                  </button>
-                </p>
-                <p v-else-if="summaryProfiles.length === 0" class="preset-hint">
-                  暂未连接到后端模型配置接口，提交时会使用服务端默认模型。
-                </p>
-              </div>
-
-              <div
-                class="summary-preset process-summary-field process-summary-inline-field"
-              >
-                <label for="summary-preset-select">总结模板</label>
-                <div
-                  ref="summaryPresetDropdownRef"
-                  class="summary-preset-dropdown"
-                  :class="{ open: isSummaryPresetMenuOpen }"
-                  @keydown.esc.stop="closeSummaryPresetMenu"
-                >
-                  <button
-                    id="summary-preset-select"
-                    type="button"
-                    class="preset-select process-preset-select summary-preset-trigger"
-                    :disabled="
-                      isLoadingSummaryPresets || presetOptions.length === 0
-                    "
-                    aria-haspopup="listbox"
-                    :aria-expanded="isSummaryPresetMenuOpen ? 'true' : 'false'"
-                    @click="toggleSummaryPresetMenu"
-                  >
-                    <span class="summary-preset-trigger-text">
-                      {{
-                        isLoadingSummaryPresets
-                          ? '正在加载模板...'
-                          : presetOptions.length === 0
-                            ? '未获取到模板（将使用后端默认）'
-                            : selectedSummaryPresetOption?.label ||
-                              '请选择总结模板'
-                      }}
-                    </span>
-                    <ChevronDown :size="16" />
-                  </button>
-
-                  <div
-                    v-if="
-                      isSummaryPresetMenuOpen &&
-                      !isLoadingSummaryPresets &&
-                      presetOptions.length > 0
-                    "
-                    class="summary-preset-popover"
-                  >
-                    <div class="summary-preset-option-list" role="listbox">
-                      <button
-                        v-for="preset in presetOptions"
-                        :id="`summary-preset-option-${preset.name}`"
-                        :key="preset.name"
-                        type="button"
-                        class="summary-preset-option"
-                        :class="{
-                          active: preset.name === selectedSummaryPreset,
-                          previewing:
-                            preset.name === previewedSummaryPresetOption?.name
-                        }"
-                        @mouseenter="previewSummaryPreset(preset.name)"
-                        @focus="previewSummaryPreset(preset.name)"
-                        @click="selectSummaryPreset(preset.name)"
-                      >
-                        <span class="summary-preset-option-label">
-                          {{ preset.label }}
-                        </span>
-                        <span
-                          v-if="preset.name === selectedSummaryPreset"
-                          class="summary-preset-option-tag"
-                        >
-                          当前
-                        </span>
-                      </button>
-                    </div>
-
-                    <div class="summary-preset-preview">
-                      <p class="summary-preset-preview-kicker">模板预览</p>
-                      <h4>
-                        {{ previewedSummaryPresetOption?.label || '总结模板' }}
-                      </h4>
-                      <p class="summary-preset-preview-body">
-                        {{ previewedSummaryPresetText }}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <p
-                  v-if="summaryPresetError"
-                  class="preset-hint preset-hint-error"
-                >
-                  {{ summaryPresetError }}
-                  <button
-                    class="preset-retry"
-                    type="button"
-                    @click="emit('loadSummaryPresets')"
-                  >
-                    重试
-                  </button>
-                </p>
-                <p v-else-if="presetOptions.length === 0" class="preset-hint">
-                  暂未连接到后端模板接口，提交时会使用服务端默认模板。
-                </p>
-              </div>
-            </div>
-          </div>
+          <ProcessSummaryConfig
+            :enabled="enableSummary"
+            :auto-generate-fancy-html="autoGenerateFancyHtml"
+            :is-open-public="isOpenPublic"
+            :selected-profile="selectedSummaryProfile"
+            :selected-preset="selectedSummaryPreset"
+            :profiles="summaryProfiles"
+            :presets="presetOptions"
+            :profiles-loading="isLoadingSummaryProfiles"
+            :presets-loading="isLoadingSummaryPresets"
+            :profile-error="summaryProfileError"
+            :preset-error="summaryPresetError"
+            :custom-prompt-template="userSummaryPromptTemplate"
+            :fallback-prompt-template="summaryDefaultPromptTemplate"
+            :custom-preset-value="CUSTOM_SUMMARY_PRESET_VALUE"
+            @update:enabled="enableSummary = $event"
+            @update:auto-generate-fancy-html="autoGenerateFancyHtml = $event"
+            @update:selected-profile="selectedSummaryProfile = $event"
+            @update:selected-preset="selectedSummaryPreset = $event"
+            @retry-profiles="loadSummaryProfiles"
+            @retry-presets="loadSummaryPresets"
+          />
 
           <div v-if="isJobDetailMode" class="new-job-hint">
             <button
@@ -1387,532 +739,78 @@
           </button>
         </form>
 
-        <p v-if="error" class="inline-error">
-          <AlertCircle :size="16" />
-          <span>{{ error }}</span>
-        </p>
+        <InlineNotice v-if="error">{{ error }}</InlineNotice>
+        <InlineNotice v-if="connectionNotice" kind="warning">
+          {{ connectionNotice }}
+        </InlineNotice>
       </article>
 
-      <ProgressPanel :job="job" :skip-summary="shouldSkipSummary" />
+      <aside class="process-sidebar">
+        <ProgressPanel :job="job" :skip-summary="shouldSkipSummary" />
+        <ProcessVideoMetadata
+          v-if="!isUploadMode"
+          :job="job"
+          :source-bvid="inputBvid"
+          :include-comments="includeComments"
+          :comment-limit="downloadAllComments ? 0 : normalizedCommentLimit"
+        />
+      </aside>
     </section>
 
-    <section class="download-layout">
-      <article class="panel panel-download">
-        <div class="download-card">
-          <p v-if="isDone && job.already_transcribed" class="cache-hit-note">
-            <CheckCircle2 :size="16" />
-            <span>{{
-              job.notice || '该视频曾经转录过，已直接返回历史文件。'
-            }}</span>
-          </p>
-
-          <div
-            v-if="isDone && (job.author || job.pubdate || job.bvid)"
-            class="video-metadata"
-          >
-            <h3>视频信息</h3>
-            <div class="metadata-items">
-              <span v-if="job.bvid" class="metadata-item">
-                <strong>BV 号:</strong> {{ job.bvid }}
-              </span>
-              <span v-if="job.author" class="metadata-item">
-                <strong>UP主:</strong> {{ job.author }}
-              </span>
-              <span v-if="job.pubdate" class="metadata-item">
-                <strong>发布时间:</strong> {{ job.pubdate }}
-              </span>
-            </div>
-          </div>
-
-          <template v-if="isDone">
-            <p v-if="isFancyHtmlPending" class="cache-hit-note">
-              <LoaderCircle :size="16" class="spin" />
-              <span
-                >Fancy HTML
-                正在后台生成，现有总结文件已可下载，稍后会自动加入文件列表。</span
-              >
-            </p>
-            <p
-              v-else-if="
-                job.auto_generate_fancy_html &&
-                job.fancy_html_status === 'failed' &&
-                job.fancy_html_error
-              "
-              class="inline-error"
-            >
-              <AlertCircle :size="16" />
-              <span>Fancy HTML 自动生成失败：{{ job.fancy_html_error }}</span>
-            </p>
-            <FileList
-              :items="allDownloadRows"
-              :summary-presets="summaryPresets"
-              :summary-default-preset="summaryDefaultPreset"
-              :selected-summary-preset="selectedSummaryPreset"
-              :summary-profiles="summaryProfiles"
-              :selected-summary-profile="selectedSummaryProfile"
-              :history-run-id="jobId"
-              :requires-api-key="requiresApiKey"
-            />
-          </template>
-          <p v-else class="download-placeholder">
-            任务完成后在这里展示可下载文件。
-          </p>
-        </div>
-      </article>
-    </section>
-
-    <section class="log-layout">
-      <article class="panel panel-log">
-        <header class="log-header">
-          <h2>执行日志</h2>
-        </header>
-
-        <div ref="logsViewport" class="log-view">
-          <p
-            v-if="!Array.isArray(job.logs) || job.logs.length === 0"
-            class="log-empty"
-          >
-            任务开始后会在这里滚动显示日志。
-          </p>
-          <p v-for="(line, idx) in job.logs || []" :key="idx" class="log-line">
-            {{ line }}
-          </p>
-        </div>
-      </article>
-    </section>
+    <ProcessJobOutput
+      :job="job"
+      :is-done="isDone"
+      :is-fancy-html-pending="isFancyHtmlPending"
+      :download-rows="allDownloadRows"
+    />
   </div>
 </template>
 
 <style scoped>
-  /* ─── New-job hint row ───────────────────────────────────────── */
-
-  .new-job-hint {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-
-  .new-job-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 12px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.9);
-    color: var(--text-soft);
-    font-size: 0.84rem;
-    font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-    transition:
-      background-color 0.2s ease,
-      border-color 0.2s ease;
-  }
-
-  .new-job-btn:hover {
-    background: #ffffff;
-    border-color: #94a3b8;
-  }
-
-  .new-job-hint-text {
-    font-size: 0.82rem;
-    color: var(--text-muted);
-  }
-
-  /* ─── Layouts ────────────────────────────────────────────────── */
-
   .layout {
-    position: relative;
-    z-index: 3;
-    max-width: 1160px;
-    margin: 0 auto;
     display: grid;
-    grid-template-columns: minmax(0, 1.16fr) minmax(320px, 0.84fr);
-    gap: 20px;
+    grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
+    gap: 16px;
+    max-width: 1220px;
+    margin: 0 auto;
   }
-
-  .download-layout,
-  .log-layout {
-    position: relative;
-    z-index: 2;
-    max-width: 1160px;
-    margin: 20px auto 0;
-  }
-
-  /* ─── Panel variants ─────────────────────────────────────────── */
 
   .panel-main {
-    position: relative;
-    z-index: 2;
-    padding: 24px 40px 40px;
-  }
-
-  .panel-download {
     padding: 28px;
-    animation-delay: 0.12s;
   }
 
-  .panel-log {
-    padding: 28px;
-    animation-delay: 0.16s;
+  .process-sidebar {
+    position: sticky;
+    top: 92px;
+    align-self: start;
+    display: grid;
+    gap: 16px;
   }
-
-  /* ─── Header ─────────────────────────────────────────────────── */
-
-  .header h1 {
-    margin: 8px 0 10px;
-    font-size: clamp(1.8rem, 3vw, 2.5rem);
-    font-weight: 800;
-    line-height: 1.1;
-    letter-spacing: -0.04em;
-  }
-
-  .header .brand {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .header .brand-logo {
-    width: 44px;
-    height: 44px;
-    flex-shrink: 0;
-  }
-
-  .header p {
-    margin: 0;
-    max-width: 52ch;
-    color: var(--text-soft);
-    line-height: 1.65;
-    font-size: 1.05rem;
-  }
-
-  /* ─── Hero pills ─────────────────────────────────────────────── */
 
   .hero-meta {
-    margin-top: 18px;
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
+    margin-bottom: 18px;
   }
 
   .hero-pill {
     display: inline-flex;
     align-items: center;
-    min-height: 30px;
-    padding: 0 14px;
-    border-radius: 999px;
-    border: 1px solid rgba(153, 246, 228, 0.6);
-    background: rgba(236, 254, 255, 0.7);
-    backdrop-filter: blur(6px);
-    color: #0f766e;
-    font-size: 0.82rem;
-    font-weight: 600;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid #fcd34d;
+    border-radius: 5px;
+    background: #fffbeb;
+    color: #92400e;
+    font-size: 0.76rem;
+    font-weight: 700;
   }
-
-  .hero-pill-soft {
-    border-color: rgba(203, 213, 225, 0.6);
-    background: rgba(248, 250, 252, 0.7);
-    color: #475569;
-  }
-
-  /* ─── Form ───────────────────────────────────────────────────── */
 
   .form {
-    margin-top: 32px;
     display: grid;
     gap: 18px;
-  }
-
-  .form label {
-    font-size: 0.9rem;
-    color: var(--text-soft);
-    font-weight: 700;
-    margin-bottom: -4px;
-  }
-
-  .input-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    border: 1px solid var(--line);
-    background: rgba(255, 255, 255, 0.7);
-    backdrop-filter: blur(8px);
-    border-radius: 16px;
-    padding: 0 16px;
-    min-height: 52px;
-    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-    box-shadow: inset 0 2px 4px rgba(15, 23, 42, 0.02);
-  }
-
-  .input-row:focus-within {
-    border-color: #38bdf8;
-    box-shadow:
-      0 0 0 4px rgba(56, 189, 248, 0.15),
-      inset 0 2px 4px rgba(15, 23, 42, 0.01);
-    background: #ffffff;
-  }
-
-  .input-row svg {
-    color: #64748b;
-    flex-shrink: 0;
-  }
-
-  .input-row input {
-    width: 100%;
-    border: none;
-    outline: none;
-    background: transparent;
-    color: var(--text-main);
-    height: 50px;
-    font-size: 1rem;
-  }
-
-  .input-example {
-    margin: -4px 0 4px;
-    font-size: 0.84rem;
-    color: var(--text-muted);
-    line-height: 1.5;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .input-example a {
-    color: var(--brand-strong);
-    text-decoration: none;
-    word-break: break-all;
-  }
-
-  .input-example a:hover {
-    text-decoration: underline;
-  }
-
-  .input-mode-tabs {
-    display: inline-flex;
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 6px;
-    background: rgba(248, 250, 252, 0.7);
-    backdrop-filter: blur(8px);
-    gap: 6px;
-  }
-
-  .input-mode-button {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 38px;
-    padding: 0 16px;
-    border: none;
-    border-radius: 10px;
-    background: transparent;
-    color: #475569;
-    font-size: 0.9rem;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  .input-mode-button.active {
-    background: linear-gradient(135deg, #0ea5e9, #14b8a6);
-    color: #ffffff;
-    box-shadow: 0 2px 8px rgba(14, 165, 233, 0.25);
-  }
-
-  .input-mode-button:disabled {
-    opacity: 0.65;
-    cursor: not-allowed;
-  }
-
-  .upload-row {
-    display: flex;
-    align-items: center;
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    min-height: 52px;
-    padding: 10px 16px;
-    background: rgba(255, 255, 255, 0.7);
-    backdrop-filter: blur(8px);
-    box-shadow: inset 0 2px 4px rgba(15, 23, 42, 0.02);
-    transition: all 0.25s ease;
-  }
-
-  .upload-row input[type='file'] {
-    width: 100%;
-    color: var(--text-soft);
-    font-size: 0.95rem;
-  }
-
-  /* ─── Toggle switch ──────────────────────────────────────────── */
-
-  .switch {
-    margin-top: 4px;
-    display: inline-flex;
-    align-items: center;
-    gap: 12px;
-    cursor: pointer;
-    user-select: none;
-  }
-
-  .switch input {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-
-  .switch-track {
-    width: 46px;
-    height: 26px;
-    border-radius: 999px;
-    border: 1px solid #cbd5e1;
-    background: #e2e8f0;
-    padding: 2px;
-    transition:
-      background-color 0.25s ease,
-      border-color 0.25s ease;
-  }
-
-  .switch-thumb {
-    display: block;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: #ffffff;
-    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.15);
-    transform: translateX(0);
-    transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  }
-
-  .switch input:checked + .switch-track {
-    border-color: #14b8a6;
-    background: linear-gradient(135deg, #14b8a6, #0ea5e9);
-  }
-
-  .switch input:checked + .switch-track .switch-thumb {
-    transform: translateX(20px);
-  }
-
-  .switch input:focus-visible + .switch-track {
-    box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.2);
-  }
-
-  .switch-label {
-    color: var(--text-soft);
-    font-size: 0.95rem;
-    font-weight: 600;
-  }
-
-  /* ─── Summary config ─────────────────────────────────────────── */
-
-  .process-summary-config {
-    padding: 24px;
-    border: 1px solid rgba(255, 255, 255, 0.6);
-    border-radius: 20px;
-    background: linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.7) 0%,
-      rgba(248, 253, 255, 0.5) 100%
-    );
-    box-shadow: 0 8px 24px -8px rgba(15, 23, 42, 0.05);
-    backdrop-filter: blur(12px);
-    display: grid;
-    gap: 20px;
-  }
-
-  .process-summary-head {
-    display: grid;
-    gap: 6px;
-  }
-
-  .process-summary-head h3 {
-    margin: 0;
-    font-size: 1.15rem;
-    color: #0f172a;
-  }
-
-  .process-summary-head p {
-    margin: 0;
-    font-size: 0.88rem;
-    line-height: 1.55;
-    color: #475569;
-  }
-
-  .process-summary-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 16px;
-  }
-
-  .process-summary-field {
-    display: grid;
-    gap: 8px;
-  }
-
-  .process-summary-inline-field {
-    grid-template-columns: max-content minmax(0, 1fr);
-    column-gap: 14px;
-    row-gap: 8px;
-    align-items: center;
-  }
-
-  .process-summary-toggle {
-    grid-column: 1 / -1;
-  }
-
-  .process-summary-field label {
-    font-size: 0.88rem;
-    font-weight: 700;
-    color: #334155;
-  }
-
-  .process-summary-inline-field .preset-hint {
-    grid-column: 2 / 3;
-  }
-
-  .summary-preset-dropdown {
-    position: relative;
-    min-width: 0;
-  }
-
-  .summary-profile-select-wrap {
-    position: relative;
-    min-width: 0;
-  }
-
-  .process-preset-select {
-    border-radius: 8px;
-    min-height: 42px;
-    padding-inline: 14px;
-    font-size: 0.9rem;
-    border-color: #cbd5e1;
-    background: linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 0.9),
-      rgba(248, 250, 252, 0.8)
-    );
-    box-shadow:
-      inset 0 1px 2px rgba(255, 255, 255, 1),
-      0 2px 6px rgba(15, 23, 42, 0.04);
-  }
-
-  .summary-profile-select {
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    padding-right: 42px;
-  }
-
-  .summary-profile-select-icon {
-    position: absolute;
-    top: 50%;
-    right: 14px;
-    transform: translateY(-50%);
-    color: #64748b;
-    pointer-events: none;
+    margin-top: 0;
   }
 
   .stt-inline {
@@ -1921,350 +819,78 @@
     align-items: center;
     column-gap: 14px;
     row-gap: 6px;
-    margin-bottom: 10px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.25);
   }
 
   .stt-inline label {
+    color: #334155;
     font-size: 0.88rem;
     font-weight: 700;
-    color: #334155;
+  }
+
+  .stt-select-wrap {
+    position: relative;
+    min-width: 0;
   }
 
   .stt-inline .preset-hint {
     grid-column: 2 / 3;
   }
 
-  .summary-preset-trigger {
+  .new-job-hint {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    flex-wrap: wrap;
     gap: 10px;
-    width: 100%;
-    text-align: left;
-    cursor: pointer;
   }
 
-  .summary-preset-trigger svg {
-    flex-shrink: 0;
-    color: #64748b;
-    transition: transform 0.2s ease;
-  }
-
-  .summary-preset-dropdown.open .summary-preset-trigger svg {
-    transform: rotate(180deg);
-  }
-
-  .summary-preset-trigger-text {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .summary-preset-popover {
-    position: absolute;
-    left: 0;
-    top: calc(100% + 10px);
-    z-index: 30;
-    width: min(700px, calc(100vw - 96px));
-    display: grid;
-    grid-template-columns: 248px 410px;
-    gap: 14px;
-    padding: 14px;
-    border: 1px solid rgba(203, 213, 225, 0.85);
-    border-radius: 18px;
-    background: rgba(255, 255, 255, 0.96);
-    box-shadow:
-      0 16px 40px -18px rgba(15, 23, 42, 0.28),
-      0 8px 20px -12px rgba(15, 23, 42, 0.16);
-    backdrop-filter: blur(18px);
-  }
-
-  .summary-preset-option-list {
-    display: grid;
-    gap: 8px;
-    max-height: 280px;
-    overflow: auto;
-  }
-
-  .summary-preset-option {
-    width: 100%;
-    border: 1px solid rgba(203, 213, 225, 0.7);
-    border-radius: 12px;
-    background: rgba(248, 250, 252, 0.9);
-    color: #334155;
-    padding: 10px 12px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    text-align: left;
-    cursor: pointer;
-    transition:
-      border-color 0.18s ease,
-      background-color 0.18s ease,
-      transform 0.18s ease;
-  }
-
-  .summary-preset-option:hover,
-  .summary-preset-option.previewing {
-    border-color: #7dd3fc;
-    background: #f0f9ff;
-  }
-
-  .summary-preset-option.active {
-    border-color: #5eead4;
-    background: #ecfeff;
-    color: #0f766e;
-  }
-
-  .summary-preset-option:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.16);
-  }
-
-  .summary-preset-option-label {
-    min-width: 0;
-    font-size: 0.86rem;
-    font-weight: 700;
-    line-height: 1.45;
-  }
-
-  .summary-preset-option-tag {
-    flex-shrink: 0;
-    padding: 3px 8px;
-    border-radius: 999px;
-    background: rgba(20, 184, 166, 0.14);
-    color: #0f766e;
-    font-size: 0.74rem;
-    font-weight: 800;
-  }
-
-  .summary-preset-preview {
-    width: 410px;
-    height: 280px;
-    min-width: 0;
-    padding: 14px 16px;
-    border-radius: 14px;
-    border: 1px solid rgba(191, 219, 254, 0.8);
-    background: linear-gradient(
-      180deg,
-      rgba(248, 250, 252, 0.96),
-      rgba(239, 246, 255, 0.92)
-    );
-    display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
-  }
-
-  .summary-preset-preview-kicker {
-    margin: 0;
-    font-size: 0.75rem;
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    color: #0284c7;
-    text-transform: uppercase;
-  }
-
-  .summary-preset-preview h4 {
-    margin: 8px 0 10px;
-    font-size: 0.95rem;
-    color: #0f172a;
-  }
-
-  .summary-preset-preview-body {
-    margin: 0;
-    color: #475569;
-    font-size: 0.84rem;
-    line-height: 1.65;
-    white-space: pre-wrap;
-    word-break: break-word;
-    overflow: auto;
-  }
-
-  .preset-select.process-preset-select:hover:not(:disabled) {
-    border-color: #93c5fd;
-    box-shadow:
-      inset 0 1px 2px rgba(255, 255, 255, 1),
-      0 6px 16px rgba(59, 130, 246, 0.08);
-  }
-
-  .preset-select.process-preset-select:focus {
-    border-color: #38bdf8;
-    box-shadow:
-      0 0 0 4px rgba(56, 189, 248, 0.18),
-      inset 0 1px 2px rgba(255, 255, 255, 1);
-  }
-
-  /* ─── Download card ──────────────────────────────────────────── */
-
-  .download-card {
-    margin-top: 24px;
-    border-radius: 20px;
-    border: 1px solid rgba(153, 246, 228, 0.6);
-    background: linear-gradient(
-      145deg,
-      rgba(240, 253, 250, 0.8),
-      rgba(236, 254, 255, 0.8)
-    );
-    backdrop-filter: blur(8px);
-    padding: 18px;
-    display: block;
-  }
-
-  .cache-hit-note {
-    margin: 0 0 12px;
+  .new-job-btn {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    color: #065f46;
-    font-size: 0.9rem;
-    font-weight: 600;
-  }
-
-  .download-placeholder {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 0.95rem;
-    line-height: 1.6;
-  }
-
-  /* ─── Log ────────────────────────────────────────────────────── */
-
-  .log-header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 14px;
-  }
-
-  .log-header h2 {
-    margin: 0;
-    font-size: 1.15rem;
-    font-weight: 800;
-  }
-
-  .log-header p {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 0.88rem;
-  }
-
-  .log-view {
-    margin-top: 18px;
-    border-radius: 16px;
-    border: 1px solid rgba(100, 116, 139, 0.25);
-    background: linear-gradient(
-      180deg,
-      rgba(248, 250, 252, 0.8),
-      rgba(241, 245, 249, 0.8)
-    );
-    backdrop-filter: blur(8px);
-    padding: 16px 18px;
-    height: 280px;
-    overflow: auto;
-    font-family:
-      'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono',
-      'Courier New', monospace;
-    box-shadow: inset 0 2px 4px rgba(15, 23, 42, 0.04);
-  }
-
-  .log-line {
-    margin: 0 0 8px;
-    color: #475569;
+    gap: 5px;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--text-soft);
     font-size: 0.84rem;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
+    font-weight: 600;
+    cursor: pointer;
   }
 
-  .log-line:last-child {
-    margin-bottom: 0;
+  .new-job-hint-text {
+    color: var(--text-muted);
+    font-size: 0.82rem;
   }
-
-  .log-empty {
-    margin: 0;
-    color: #94a3b8;
-    font-size: 0.9rem;
-  }
-
-  /* ─── Responsive ─────────────────────────────────────────────── */
 
   @media (max-width: 980px) {
     .layout {
       grid-template-columns: 1fr;
     }
 
-    .panel-main,
-    .panel-download,
-    .panel-log {
+    .panel-main {
       padding: 24px;
     }
 
-    .log-header {
-      flex-direction: column;
-      align-items: flex-start;
-    }
-
-    .process-summary-grid {
-      grid-template-columns: 1fr;
+    .process-sidebar {
+      position: static;
     }
   }
 
   @media (max-width: 640px) {
-    .panel-main,
-    .panel-download,
-    .panel-log {
+    .panel-main {
       padding: 20px;
     }
 
-    .header h1 {
-      font-size: 1.7rem;
-    }
-
-    .input-row,
-    .upload-row {
-      padding-inline: 14px;
-    }
-
-    .input-mode-tabs {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      width: 100%;
-    }
-
-    .input-mode-button {
-      justify-content: center;
-      padding: 0 12px;
-    }
-
-    .process-summary-config {
-      padding: 18px;
-    }
-
-    .process-summary-inline-field {
+    .stt-inline {
       grid-template-columns: 1fr;
     }
 
-    .summary-preset-popover {
-      left: 0;
-      width: 100%;
-      grid-template-columns: 1fr;
+    .stt-inline .preset-hint {
+      grid-column: 1 / -1;
     }
 
-    .summary-preset-preview {
-      width: 100%;
-      height: 240px;
-    }
-
-    .process-summary-inline-field .preset-hint {
-      grid-column: 1 / 2;
-    }
-
-    .log-view {
-      height: 240px;
-      padding: 14px;
+    .layout {
+      gap: 12px;
     }
   }
 </style>

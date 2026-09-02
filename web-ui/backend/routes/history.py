@@ -1,22 +1,40 @@
 """History endpoints: list, detail, and delete transcription records."""
 
+import json
 import logging
-from pathlib import Path
+from collections.abc import AsyncIterator
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from b2t.config import resolve_summarize_model_profile, resolve_summary_preset_name
+from b2t.download.bilibili_categories import (
+    get_bilibili_category_filter_tids,
+    get_bilibili_parent_tid,
+    get_bilibili_parent_tname,
+    get_bilibili_tname,
+)
+from b2t.download.metadata import VideoMetadata
 from b2t.download.yutto_cli import extract_bilibili_page_from_target_id
 from b2t.history import build_history_artifacts
-from b2t.storage import StoredArtifact
-from b2t.summarize.llm import validate_summary_prompt_template
+from b2t.storage import SUMMARY_ARTIFACT_KINDS, StoredArtifact
+from backend.artifacts import summary_artifact_group_ids
+from backend.artifacts import (
+    summary_family_storage_keys as _summary_family_storage_keys,
+)
 from backend.dependencies import get_history_db, get_storage_backend
 from backend.download_registry import download_registry
+from backend.event_stream import event_broker, history_channel
 from backend.schemas import (
+    HistoryAuthorFilterOptionResponse,
+    HistoryCategoryFilterOptionResponse,
     HistoryDetailArtifactResponse,
     HistoryDetailResponse,
+    HistoryFilterOptionsResponse,
     HistoryItemResponse,
     HistoryListResponse,
+    HistoryPlatformFilterOptionResponse,
     HistoryRegenerateSummaryRequest,
 )
 from backend.services import _run_summary_only_from_existing
@@ -25,52 +43,14 @@ from backend.settings import get_runtime_app_config, is_delete_enabled
 router = APIRouter()
 CUSTOM_SUMMARY_PRESET_VALUE = "__user_custom__"
 logger = logging.getLogger(__name__)
-SUMMARY_ARTIFACT_KINDS = {
-    "summary",
-    "summary_text",
-    "summary_fancy_html",
-    "summary_png",
-    "summary_no_table_png",
-    "summary_table_md",
-    "summary_table_png",
-    "summary_table_pdf",
-    "summary_timeline",
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+_PLATFORM_NAMES = {
+    "bilibili": "Bilibili",
+    "xiaoyuzhou": "小宇宙",
+    "ximalaya": "喜马拉雅",
+    "upload": "本地上传",
+    "knowledge_base": "知识库查询",
 }
-
-
-def _storage_parent_key(storage_key: str) -> str:
-    normalized = storage_key.replace("\\", "/").strip("/")
-    if "/" not in normalized:
-        return ""
-    return normalized.rsplit("/", 1)[0]
-
-
-def _summary_family_storage_keys(detail, summary_artifact) -> set[str]:
-    summary_stem = Path(summary_artifact.filename).stem
-    expected_filenames = {
-        summary_artifact.filename,
-        f"{summary_stem}.txt",
-        f"{summary_stem}.png",
-        f"{summary_stem}_fancy.html",
-        f"{summary_stem}_table.md",
-        f"{summary_stem}_table.png",
-        f"{summary_stem}_table.pdf",
-        f"{summary_stem}_no_table.png",
-        f"{summary_stem}_timeline.txt",
-    }
-    parent_key = _storage_parent_key(summary_artifact.storage_key)
-    related: set[str] = set()
-    for artifact in detail.artifacts:
-        if artifact.kind not in SUMMARY_ARTIFACT_KINDS:
-            continue
-        if artifact.storage_key == summary_artifact.storage_key:
-            related.add(artifact.storage_key)
-            continue
-        if _storage_parent_key(artifact.storage_key) != parent_key:
-            continue
-        if artifact.filename in expected_filenames:
-            related.add(artifact.storage_key)
-    return related
 
 
 def _summary_config_storage_keys(
@@ -105,11 +85,16 @@ def _to_history_detail_response(
     detail,
 ) -> HistoryDetailResponse:
     artifacts: list[HistoryDetailArtifactResponse] = []
+    summary_group_ids = summary_artifact_group_ids(detail.artifacts)
     for artifact in detail.artifacts:
         stored = StoredArtifact(
             filename=artifact.filename,
             storage_key=artifact.storage_key,
             backend=artifact.backend,
+            kind=artifact.kind,
+            derived_from=artifact.derived_from,
+            summary_preset=artifact.summary_preset,
+            summary_profile=artifact.summary_profile,
         )
         download_id = download_registry.store_artifact(stored)
         artifacts.append(
@@ -119,6 +104,8 @@ def _to_history_detail_response(
                 download_url=f"/api/download/{download_id}",
                 summary_preset=artifact.summary_preset,
                 summary_profile=artifact.summary_profile,
+                derived_from=artifact.derived_from,
+                summary_group_id=summary_group_ids.get(artifact.storage_key, ""),
             )
         )
 
@@ -135,6 +122,15 @@ def _to_history_detail_response(
         record_type=getattr(detail, "record_type", "transcription") or "transcription",
         fancy_html_status=getattr(detail, "fancy_html_status", "idle") or "idle",
         fancy_html_error=(getattr(detail, "fancy_html_error", "") or ""),
+        summary_regenerations=[
+            {
+                "summary_preset": task.summary_preset,
+                "summary_profile": task.summary_profile,
+                "status": task.status,
+                "error": task.error,
+            }
+            for task in getattr(detail, "summary_regenerations", [])
+        ],
     )
 
 
@@ -155,12 +151,67 @@ def _resolve_regenerate_summary_preset(
     )
 
 
+def _persist_regenerated_summary(
+    *,
+    db,
+    detail,
+    storage_backend,
+    new_summary_artifacts: dict[str, object],
+    replaced_storage_keys: set[str],
+    resolved_preset: str,
+    resolved_profile: str,
+) -> None:
+    appended = build_history_artifacts(
+        {
+            key: artifact
+            for key, artifact in new_summary_artifacts.items()
+            if not key.startswith("_")
+        },
+        summary_preset=resolved_preset,
+        summary_profile=resolved_profile,
+    )
+    metadata = new_summary_artifacts.get("_metadata")
+    author = detail.author
+    pubdate = detail.pubdate
+    if isinstance(metadata, VideoMetadata):
+        if not author.strip() or author.strip().lower() == "unknown":
+            author = metadata.author
+        if not pubdate.strip() or pubdate.strip().lower() == "unknown":
+            pubdate = metadata.pubdate
+
+    db.replace_summary_artifacts(
+        detail.run_id,
+        artifacts=appended,
+        replaced_storage_keys=replaced_storage_keys,
+        author=author,
+        pubdate=pubdate,
+    )
+
+    if not replaced_storage_keys:
+        return
+    download_registry.remove_artifacts_by_storage_keys(replaced_storage_keys)
+    for artifact in detail.artifacts:
+        if artifact.storage_key not in replaced_storage_keys:
+            continue
+        try:
+            storage_backend.delete_file(artifact.storage_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "清理被覆盖的总结文件 %s 失败: %s",
+                artifact.filename,
+                exc,
+            )
+
+
 @router.get("/api/history", response_model=HistoryListResponse)
 def list_history(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     search: str = Query(default=""),
     record_type: str = Query(default=""),
+    platform: Annotated[list[str] | None, Query()] = None,
+    category_tid: Annotated[list[int] | None, Query()] = None,
+    author: Annotated[list[str] | None, Query()] = None,
 ) -> HistoryListResponse:
     try:
         db = get_history_db()
@@ -170,8 +221,27 @@ def list_history(
             detail=f"历史数据库初始化失败: {exc}",
         ) from exc
 
+    selected_category_tids = category_tid if isinstance(category_tid, list) else []
+    selected_authors = author if isinstance(author, list) else []
+    selected_platforms = platform if isinstance(platform, list) else []
+    expanded_category_tids = tuple(
+        sorted(
+            {
+                expanded_tid
+                for selected_tid in selected_category_tids
+                if selected_tid > 0
+                for expanded_tid in get_bilibili_category_filter_tids(selected_tid)
+            }
+        )
+    )
     result = db.list_runs(
-        page=page, page_size=page_size, search=search, record_type=record_type
+        page=page,
+        page_size=page_size,
+        search=search,
+        record_type=record_type,
+        platforms=tuple(selected_platforms),
+        category_tids=expanded_category_tids,
+        authors=tuple(selected_authors),
     )
     return HistoryListResponse(
         items=[
@@ -185,6 +255,10 @@ def list_history(
                 created_at=item.created_at,
                 has_summary=item.has_summary,
                 file_count=item.file_count,
+                summary_version_count=item.summary_version_count,
+                tid=item.tid,
+                tname=get_bilibili_tname(item.tid),
+                parent_tname=get_bilibili_parent_tname(item.tid),
                 record_type=item.record_type,
             )
             for item in result.items
@@ -193,6 +267,81 @@ def list_history(
         page=result.page,
         page_size=result.page_size,
         has_more=result.has_more,
+    )
+
+
+@router.get("/api/history/filters", response_model=HistoryFilterOptionsResponse)
+def history_filter_options() -> HistoryFilterOptionsResponse:
+    try:
+        db = get_history_db()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"历史数据库初始化失败: {exc}",
+        ) from exc
+
+    category_counts = dict(db.list_history_category_counts())
+    grouped_tids: dict[int, list[int]] = {}
+    standalone_tids: list[int] = []
+    for tid in category_counts:
+        parent_tid = get_bilibili_parent_tid(tid)
+        if parent_tid > 0:
+            grouped_tids.setdefault(parent_tid, []).append(tid)
+        else:
+            standalone_tids.append(tid)
+
+    def group_count(tid: int) -> int:
+        return category_counts.get(tid, 0) + sum(
+            category_counts[child_tid] for child_tid in grouped_tids.get(tid, [])
+        )
+
+    top_level_tids = set(standalone_tids) | set(grouped_tids)
+    ordered_top_level_tids = sorted(
+        (tid for tid in top_level_tids if get_bilibili_tname(tid)),
+        key=lambda tid: (-group_count(tid), get_bilibili_tname(tid)),
+    )
+
+    categories: list[HistoryCategoryFilterOptionResponse] = []
+    for parent_tid in ordered_top_level_tids:
+        child_tids = sorted(
+            grouped_tids.get(parent_tid, []),
+            key=lambda tid: (-category_counts[tid], get_bilibili_tname(tid)),
+        )
+        categories.append(
+            HistoryCategoryFilterOptionResponse(
+                tid=parent_tid,
+                tname=get_bilibili_tname(parent_tid),
+                count=group_count(parent_tid),
+                is_parent=bool(child_tids),
+            )
+        )
+        for child_tid in child_tids:
+            categories.append(
+                HistoryCategoryFilterOptionResponse(
+                    tid=child_tid,
+                    tname=get_bilibili_tname(child_tid),
+                    parent_tid=parent_tid,
+                    parent_tname=get_bilibili_tname(parent_tid),
+                    count=category_counts[child_tid],
+                )
+            )
+    authors = [
+        HistoryAuthorFilterOptionResponse(author=author, count=count)
+        for author, count in db.list_history_author_counts()
+    ]
+    platforms = [
+        HistoryPlatformFilterOptionResponse(
+            platform=platform,
+            name=_PLATFORM_NAMES[platform],
+            count=count,
+        )
+        for platform, count in db.list_history_platform_counts()
+        if platform in _PLATFORM_NAMES
+    ]
+    return HistoryFilterOptionsResponse(
+        platforms=platforms,
+        categories=categories,
+        authors=authors,
     )
 
 
@@ -211,6 +360,46 @@ def history_detail(run_id: str) -> HistoryDetailResponse:
         raise HTTPException(status_code=404, detail="转录记录不存在")
 
     return _to_history_detail_response(detail)
+
+
+@router.get("/api/history/{run_id}/events")
+async def history_events(run_id: str) -> StreamingResponse:
+    db = get_history_db()
+    if db.get_run_detail(run_id) is None:
+        raise HTTPException(status_code=404, detail="转录记录不存在")
+
+    async def stream() -> AsyncIterator[str]:
+        subscription = event_broker.subscribe([history_channel(run_id)])
+        try:
+            while True:
+                detail = db.get_run_detail(run_id)
+                if detail is None:
+                    yield f'event: deleted\ndata: {{"run_id": {json.dumps(run_id)} }}\n\n'
+                    return
+                response = _to_history_detail_response(detail)
+                yield (
+                    "event: history\ndata: "
+                    f"{json.dumps(response.model_dump(mode='json'), ensure_ascii=False)}"
+                    "\n\n"
+                )
+                has_active_update = response.fancy_html_status in {
+                    "pending",
+                    "running",
+                } or any(
+                    task.status == "running" for task in response.summary_regenerations
+                )
+                if not has_active_update:
+                    return
+                if not await subscription.wait():
+                    yield ": keep-alive\n\n"
+        finally:
+            subscription.close()
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
 
 
 @router.post(
@@ -236,11 +425,7 @@ def regenerate_history_summary(
     try:
         config = get_runtime_app_config(
             require_public_api_key=True,
-            api_key=(payload.api_key or "").strip() or None,
-            deepseek_api_key=(payload.deepseek_api_key or "").strip() or None,
-            custom_llm_base_url=(payload.custom_llm_base_url or "").strip() or None,
-            custom_llm_api_key=(payload.custom_llm_api_key or "").strip() or None,
-            custom_llm_model=(payload.custom_llm_model or "").strip() or None,
+            **payload.runtime_config_kwargs(),
         )
         storage_backend = get_storage_backend()
     except FileNotFoundError as exc:
@@ -256,14 +441,10 @@ def regenerate_history_summary(
             detail=f"初始化配置或存储后端失败: {exc}",
         ) from exc
 
-    summary_preset = (payload.summary_preset or "").strip() or None
-    summary_profile = (payload.summary_profile or "").strip() or None
-    summary_prompt_template = (payload.summary_prompt_template or "").strip() or None
+    summary_preset = payload.summary_preset
+    summary_profile = payload.summary_profile
+    summary_prompt_template = payload.summary_prompt_template
     try:
-        if summary_prompt_template is not None:
-            summary_prompt_template = validate_summary_prompt_template(
-                summary_prompt_template
-            )
         resolved_preset = _resolve_regenerate_summary_preset(
             config=config,
             summary_preset=summary_preset,
@@ -309,6 +490,10 @@ def regenerate_history_summary(
             filename=artifact.filename,
             storage_key=artifact.storage_key,
             backend=artifact.backend,
+            kind=artifact.kind,
+            derived_from=artifact.derived_from,
+            summary_preset=artifact.summary_preset,
+            summary_profile=artifact.summary_profile,
         )
 
     if "markdown" not in existing_results:
@@ -316,6 +501,21 @@ def regenerate_history_summary(
             status_code=400,
             detail="历史转录结果中缺少 Markdown 文件，无法重新生成总结",
         )
+
+    started = db.try_start_summary_regeneration(
+        run_id,
+        summary_preset=resolved_preset,
+        summary_profile=resolved_profile,
+    )
+    if not started:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"模型配置 {resolved_profile} 与总结模板 {resolved_preset} "
+                "正在生成中，请等待当前任务完成。"
+            ),
+        )
+    event_broker.publish(history_channel(run_id))
 
     try:
         new_summary_artifacts = _run_summary_only_from_existing(
@@ -330,56 +530,38 @@ def regenerate_history_summary(
             author=detail.author,
             pubdate=detail.pubdate,
         )
+        _persist_regenerated_summary(
+            db=db,
+            detail=detail,
+            storage_backend=storage_backend,
+            new_summary_artifacts=new_summary_artifacts,
+            replaced_storage_keys=replaced_storage_keys,
+            resolved_preset=resolved_preset,
+            resolved_profile=resolved_profile,
+        )
     except Exception as exc:
+        error = str(exc) or "重新生成总结失败"
+        db.update_summary_regeneration_status(
+            run_id,
+            summary_preset=resolved_preset,
+            summary_profile=resolved_profile,
+            status="failed",
+            error=error,
+        )
+        event_broker.publish(history_channel(run_id))
         raise HTTPException(
             status_code=500,
-            detail=str(exc) or "重新生成总结失败",
+            detail=error,
         ) from exc
 
-    appended = build_history_artifacts(
-        new_summary_artifacts,
+    db.update_summary_regeneration_status(
+        run_id,
         summary_preset=resolved_preset,
         summary_profile=resolved_profile,
+        status="succeeded",
+        error="",
     )
-    merged_artifacts = [
-        artifact
-        for artifact in detail.artifacts
-        if artifact.storage_key not in replaced_storage_keys
-    ]
-    merged_artifacts.extend(appended)
-
-    deduped_artifacts = []
-    seen_storage_keys: set[str] = set()
-    for artifact in merged_artifacts:
-        if artifact.storage_key in seen_storage_keys:
-            continue
-        seen_storage_keys.add(artifact.storage_key)
-        deduped_artifacts.append(artifact)
-
-    db.record_run(
-        run_id=detail.run_id,
-        bvid=detail.bvid,
-        title=detail.title,
-        author=detail.author,
-        pubdate=detail.pubdate,
-        created_at=detail.created_at,
-        has_summary=True,
-        artifacts=deduped_artifacts,
-    )
-
-    if replaced_storage_keys:
-        download_registry.remove_artifacts_by_storage_keys(replaced_storage_keys)
-        for artifact in detail.artifacts:
-            if artifact.storage_key not in replaced_storage_keys:
-                continue
-            try:
-                storage_backend.delete_file(artifact.storage_key)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "清理被覆盖的总结文件 %s 失败: %s",
-                    artifact.filename,
-                    exc,
-                )
+    event_broker.publish(history_channel(run_id))
 
     updated = db.get_run_detail(run_id)
     if updated is None:
@@ -444,7 +626,7 @@ def delete_history_artifact(run_id: str, download_id: str) -> HistoryDetailRespo
             continue
         try:
             storage_backend.delete_file(artifact.storage_key)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("删除文件 %s 失败: %s", artifact.filename, exc)
             failed_files.append(artifact.filename)
     if failed_files:
@@ -514,7 +696,7 @@ def delete_history(run_id: str) -> dict[str, str]:
         try:
             storage_backend.delete_file(artifact.storage_key)
             deleted_count += 1
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "删除文件 %s 失败: %s",
                 artifact.filename,

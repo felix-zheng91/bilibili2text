@@ -3,21 +3,60 @@
 import logging
 from datetime import datetime
 
+from b2t.config import STOCK_STATUS_MODE_BACKGROUND_HYBRID, get_stock_status_mode
 from backend.dependencies import get_history_db, get_rag_store, get_storage_backend
 from backend.jobs import _append_job_log, _get_job, _update_job
 from backend.logging_config import JOB_LOG_DATE_FORMAT, _redact_text
 from backend.services import (
     _artifact_download_item,
+    _generate_summary_png_exports,
     _merge_history_artifact,
     _run_fancy_html_only_from_summary,
 )
-from backend.task_queue import submit_postprocess
+from backend.settings import STOCK_STATUS_MAX_WORKERS
+from backend.task_queue import TaskQueueFull, submit_postprocess
 
 logger = logging.getLogger(__name__)
 
 
 class PostProcessScheduler:
     """Schedule non-blocking indexing and fancy HTML generation work."""
+
+    def trigger_stock_status_refresh(
+        self,
+        *,
+        bvid: str | None,
+        results: dict[str, object],
+        config,
+        storage_backend,
+    ) -> None:
+        if get_stock_status_mode(config) != STOCK_STATUS_MODE_BACKGROUND_HYBRID:
+            return
+        summary_artifact = results.get("summary")
+        if not bvid or not (
+            hasattr(summary_artifact, "storage_key")
+            and hasattr(summary_artifact, "filename")
+        ):
+            return
+
+        def _do_refresh() -> None:
+            try:
+                generated = _generate_summary_png_exports(
+                    results=results,
+                    storage_backend=storage_backend,
+                    config=config,
+                    fetch_stock_statuses=True,
+                    refresh_stock_statuses=True,
+                    prefer_baostock_for_a_shares=True,
+                    stock_status_max_workers=STOCK_STATUS_MAX_WORKERS,
+                    include_no_table=False,
+                )
+                if generated:
+                    logger.info("股票行情缓存及图片刷新完成: bvid=%s", bvid)
+            except Exception as exc:
+                logger.warning("股票行情后台刷新失败（不影响下载）: %s", exc)
+
+        submit_postprocess(_do_refresh)
 
     def trigger_rag_index(self, run_id: str | None, config) -> None:
         if run_id is None or not config.rag.enabled:
@@ -39,7 +78,10 @@ class PostProcessScheduler:
             except Exception as exc:
                 logger.warning("RAG 索引失败（不影响转录结果）: %s", exc)
 
-        submit_postprocess(_do_index)
+        try:
+            submit_postprocess(_do_index)
+        except TaskQueueFull:
+            logger.warning("RAG 索引任务队列已满，跳过本次索引: run_id=%s", run_id)
 
     def trigger_fancy_html_generation(
         self,
@@ -127,7 +169,20 @@ class PostProcessScheduler:
                     ),
                 )
 
-        submit_postprocess(_do_generate)
+        try:
+            submit_postprocess(_do_generate)
+        except TaskQueueFull:
+            message = "Fancy HTML 生成任务队列已满，未能提交。"
+            logger.warning(message)
+            _update_job(
+                job_id,
+                fancy_html_status="failed",
+                fancy_html_error=message,
+            )
+            _append_job_log(
+                job_id,
+                f"{datetime.now().strftime(JOB_LOG_DATE_FORMAT)} [WARNING] b2t.pipeline: {message}",
+            )
 
 
 postprocess_scheduler = PostProcessScheduler()

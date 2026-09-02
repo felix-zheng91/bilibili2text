@@ -1,24 +1,29 @@
 """Process endpoints: submit a video URL / upload audio and poll job status."""
 
+import json
 import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 
-from b2t.summarize.llm import validate_summary_prompt_template
-from backend.job_store import job_repository
+from backend.event_stream import event_broker, job_channel
+from backend.job_store import JobCapacityError, job_manager
 from backend.jobs import _create_job, _get_job, _list_active_jobs
 from backend.runner import _run_job
 from backend.schemas import (
     ActiveJobItem,
     ActiveJobsResponse,
-    DownloadItemResponse,
+    JobSnapshotsResponse,
     ProcessRequest,
     ProcessStartResponse,
     ProcessStatusResponse,
+    SummarySelectionRequest,
 )
 from backend.settings import (
     get_runtime_app_config,
@@ -28,6 +33,7 @@ from backend.settings import (
 from backend.task_queue import submit_job
 
 router = APIRouter()
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 _UPLOAD_BVID_NAME_PATTERN = re.compile(r"^(BV[0-9A-Za-z]{10})_(.+)$", re.IGNORECASE)
 _ALLOWED_AUDIO_SUFFIXES = {
     ".aac",
@@ -47,18 +53,6 @@ _ALLOWED_VIDEO_SUFFIXES = {
     ".mp4",
     ".webm",
 }
-
-
-def _clean_optional_text(value: str | None) -> str | None:
-    cleaned = value.strip() if isinstance(value, str) else ""
-    return cleaned or None
-
-
-def _clean_optional_prompt_template(value: str | None) -> str | None:
-    cleaned = _clean_optional_text(value)
-    if cleaned is None:
-        return None
-    return validate_summary_prompt_template(cleaned)
 
 
 def _normalize_bvid(raw: str) -> str:
@@ -213,32 +207,31 @@ def process_video(payload: ProcessRequest) -> ProcessStartResponse:
     if not payload.url.strip():
         raise HTTPException(status_code=400, detail="URL 不能为空")
 
-    summary_preset = _clean_optional_text(payload.summary_preset)
-    summary_profile = _clean_optional_text(payload.summary_profile)
-    stt_profile = _clean_optional_text(payload.stt_profile)
-    summary_prompt_template = _clean_optional_prompt_template(
-        payload.summary_prompt_template
-    )
+    summary_preset = payload.summary_preset
+    summary_profile = payload.summary_profile
+    summary_prompt_template = payload.summary_prompt_template
+    stt_profile = payload.stt_profile
 
     _ensure_runtime_ready(
-        api_key=_clean_optional_text(payload.api_key),
-        deepseek_api_key=_clean_optional_text(payload.deepseek_api_key),
-        custom_llm_base_url=_clean_optional_text(payload.custom_llm_base_url),
-        custom_llm_api_key=_clean_optional_text(payload.custom_llm_api_key),
-        custom_llm_model=_clean_optional_text(payload.custom_llm_model),
+        **payload.runtime_config_kwargs(),
         summary_profile=summary_profile,
     )
 
-    job = _create_job(
-        skip_summary=payload.skip_summary,
-        summary_preset=summary_preset,
-        summary_profile=summary_profile,
-        summary_prompt_template=summary_prompt_template,
-        auto_generate_fancy_html=payload.auto_generate_fancy_html,
-        stt_profile=stt_profile,
-    )
-    submit_job(
+    try:
+        job = _create_job(
+            skip_summary=payload.skip_summary,
+            summary_preset=summary_preset,
+            summary_profile=summary_profile,
+            summary_prompt_template=summary_prompt_template,
+            auto_generate_fancy_html=payload.auto_generate_fancy_html,
+            stt_profile=stt_profile,
+        )
+    except JobCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    job_manager.submit(
+        str(job["job_id"]),
         _run_job,
+        submitter=submit_job,
         job_id=str(job["job_id"]),
         url=payload.url.strip(),
         skip_summary=payload.skip_summary,
@@ -248,11 +241,9 @@ def process_video(payload: ProcessRequest) -> ProcessStartResponse:
         auto_generate_fancy_html=payload.auto_generate_fancy_html,
         stt_profile=stt_profile,
         prefer_bilibili_subtitle=payload.prefer_bilibili_subtitle,
-        api_key=_clean_optional_text(payload.api_key),
-        deepseek_api_key=_clean_optional_text(payload.deepseek_api_key),
-        custom_llm_base_url=_clean_optional_text(payload.custom_llm_base_url),
-        custom_llm_api_key=_clean_optional_text(payload.custom_llm_api_key),
-        custom_llm_model=_clean_optional_text(payload.custom_llm_model),
+        include_comments=payload.include_comments,
+        comment_limit=payload.comment_limit,
+        **payload.runtime_config_kwargs(),
     )
 
     return ProcessStartResponse(job_id=str(job["job_id"]))
@@ -260,7 +251,7 @@ def process_video(payload: ProcessRequest) -> ProcessStartResponse:
 
 @router.post("/api/process/upload", response_model=ProcessStartResponse)
 def process_uploaded_audio(
-    file: UploadFile = File(..., description="待转录的音频文件"),
+    file: UploadFile = File(..., description="待转录的音频文件"),  # noqa: B008
     skip_summary: bool = Form(default=False),
     summary_preset: str | None = Form(default=None),
     summary_profile: str | None = Form(default=None),
@@ -278,13 +269,22 @@ def process_uploaded_audio(
             status_code=403,
             detail="当前模式不允许直接上传文件，请改为输入视频 URL 或 BV 号",
         )
+    try:
+        options = SummarySelectionRequest(
+            summary_preset=summary_preset,
+            summary_profile=summary_profile,
+            summary_prompt_template=summary_prompt_template,
+            api_key=api_key,
+            deepseek_api_key=deepseek_api_key,
+            custom_llm_base_url=custom_llm_base_url,
+            custom_llm_api_key=custom_llm_api_key,
+            custom_llm_model=custom_llm_model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _ensure_runtime_ready(
-        api_key=_clean_optional_text(api_key),
-        deepseek_api_key=_clean_optional_text(deepseek_api_key),
-        custom_llm_base_url=_clean_optional_text(custom_llm_base_url),
-        custom_llm_api_key=_clean_optional_text(custom_llm_api_key),
-        custom_llm_model=_clean_optional_text(custom_llm_model),
-        summary_profile=_clean_optional_text(summary_profile),
+        **options.runtime_config_kwargs(),
+        summary_profile=options.summary_profile,
     )
 
     open_public = is_open_public_mode()
@@ -296,12 +296,12 @@ def process_uploaded_audio(
     else:
         safe_filename, bvid = _validate_upload_filename(file.filename or "")
         upload_kind = "audio"
-    cleaned_summary_preset = _clean_optional_text(summary_preset)
-    cleaned_summary_profile = _clean_optional_text(summary_profile)
-    cleaned_stt_profile = _clean_optional_text(stt_profile)
-    cleaned_summary_prompt_template = _clean_optional_prompt_template(
-        summary_prompt_template
-    )
+    cleaned_summary_preset = options.summary_preset
+    cleaned_summary_profile = options.summary_profile
+    cleaned_summary_prompt_template = options.summary_prompt_template
+    cleaned_stt_profile = (
+        stt_profile.strip() if isinstance(stt_profile, str) else ""
+    ) or None
 
     temp_dir = Path(tempfile.mkdtemp(prefix="b2t-upload-"))
     upload_path = temp_dir / safe_filename
@@ -330,18 +330,24 @@ def process_uploaded_audio(
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
 
-    job = _create_job(
-        skip_summary=skip_summary,
-        summary_preset=cleaned_summary_preset,
-        summary_profile=cleaned_summary_profile,
-        summary_prompt_template=cleaned_summary_prompt_template,
-        auto_generate_fancy_html=auto_generate_fancy_html,
-        stt_profile=cleaned_stt_profile,
-    )
+    try:
+        job = _create_job(
+            skip_summary=skip_summary,
+            summary_preset=cleaned_summary_preset,
+            summary_profile=cleaned_summary_profile,
+            summary_prompt_template=cleaned_summary_prompt_template,
+            auto_generate_fancy_html=auto_generate_fancy_html,
+            stt_profile=cleaned_stt_profile,
+        )
+    except JobCapacityError as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=429, detail=str(exc)) from None
     job_id = str(job["job_id"])
     input_bvid = f"upload-{job_id}" if open_public else bvid
-    submit_job(
+    submitted = job_manager.submit(
+        job_id,
         _run_job,
+        submitter=submit_job,
         job_id=job_id,
         url=None,
         input_audio_path=str(input_path),
@@ -353,12 +359,10 @@ def process_uploaded_audio(
         summary_prompt_template=cleaned_summary_prompt_template,
         auto_generate_fancy_html=auto_generate_fancy_html,
         stt_profile=cleaned_stt_profile,
-        api_key=_clean_optional_text(api_key),
-        deepseek_api_key=_clean_optional_text(deepseek_api_key),
-        custom_llm_base_url=_clean_optional_text(custom_llm_base_url),
-        custom_llm_api_key=_clean_optional_text(custom_llm_api_key),
-        custom_llm_model=_clean_optional_text(custom_llm_model),
+        **options.runtime_config_kwargs(),
     )
+    if submitted is None:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     return ProcessStartResponse(job_id=job_id)
 
@@ -369,9 +373,56 @@ def list_active_jobs() -> ActiveJobsResponse:
     return ActiveJobsResponse(jobs=[ActiveJobItem(**j) for j in jobs])
 
 
+def _serialize_sse(event: str, payload: object) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _job_snapshots_response(job_ids: tuple[str, ...]) -> JobSnapshotsResponse:
+    jobs = [job for job_id in job_ids if (job := _get_job(job_id)) is not None]
+    return JobSnapshotsResponse(jobs=[_to_process_status_response(job) for job in jobs])
+
+
+def _process_response_is_active(response: ProcessStatusResponse) -> bool:
+    if response.status in {"queued", "running"}:
+        return True
+    return (
+        response.status == "succeeded"
+        and response.auto_generate_fancy_html
+        and (response.fancy_html_status in {"pending", "running"})
+    )
+
+
+@router.get("/api/jobs/events")
+async def active_job_events(
+    job_id: Annotated[list[str], Query()],
+) -> StreamingResponse:
+    job_ids = tuple(dict.fromkeys(value for value in job_id if value))
+    if not job_ids:
+        raise HTTPException(status_code=400, detail="至少需要一个任务 ID")
+
+    async def stream() -> AsyncIterator[str]:
+        subscription = event_broker.subscribe(job_channel(value) for value in job_ids)
+        try:
+            while True:
+                response = _job_snapshots_response(job_ids)
+                yield _serialize_sse("jobs", response.model_dump(mode="json"))
+                if not any(_process_response_is_active(job) for job in response.jobs):
+                    return
+                if not await subscription.wait():
+                    yield ": keep-alive\n\n"
+        finally:
+            subscription.close()
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
 @router.post("/api/process/{job_id}/cancel")
 def cancel_job(job_id: str) -> dict:
-    cancelled, status = job_repository.cancel(job_id)
+    cancelled, status = job_manager.cancel(job_id)
     if status is None:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
     if not cancelled:
@@ -382,94 +433,47 @@ def cancel_job(job_id: str) -> dict:
     return {"ok": True, "job_id": job_id}
 
 
+def _to_process_status_response(job: dict) -> ProcessStatusResponse:
+    return ProcessStatusResponse.model_validate(job)
+
+
+@router.get("/api/process/{job_id}/events")
+async def process_events(job_id: str) -> StreamingResponse:
+    if _get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+
+    async def stream() -> AsyncIterator[str]:
+        subscription = event_broker.subscribe([job_channel(job_id)])
+        try:
+            while True:
+                job = _get_job(job_id)
+                if job is None:
+                    yield _serialize_sse("deleted", {"job_id": job_id})
+                    return
+                response = _to_process_status_response(job)
+                yield _serialize_sse("job", response.model_dump(mode="json"))
+                fancy_html_active = response.auto_generate_fancy_html and (
+                    response.fancy_html_status in {"pending", "running"}
+                )
+                if response.status in {"failed", "cancelled"} or (
+                    response.status == "succeeded" and not fancy_html_active
+                ):
+                    return
+                while not await subscription.wait():
+                    yield ": keep-alive\n\n"
+        finally:
+            subscription.close()
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
 @router.get("/api/process/{job_id}", response_model=ProcessStatusResponse)
 def process_status(job_id: str) -> ProcessStatusResponse:
     job = _get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
-
-    all_downloads_raw = job.get("all_downloads")
-    all_downloads: list[DownloadItemResponse] = []
-    if isinstance(all_downloads_raw, list):
-        for item in all_downloads_raw:
-            if not isinstance(item, dict):
-                continue
-            url = item.get("url")
-            filename = item.get("filename")
-            kind = item.get("kind")
-            if not (
-                isinstance(url, str)
-                and isinstance(filename, str)
-                and isinstance(kind, str)
-            ):
-                continue
-            all_downloads.append(
-                DownloadItemResponse(url=url, filename=filename, kind=kind)
-            )
-
-    return ProcessStatusResponse(
-        job_id=str(job["job_id"]),
-        status=str(job["status"]),
-        skip_summary=bool(job.get("skip_summary")),
-        stage=str(job["stage"]),
-        stage_label=str(job["stage_label"]),
-        progress=int(job["progress"]),
-        download_url=str(job["download_url"]),
-        filename=job["filename"] if isinstance(job["filename"], str) else None,
-        txt_download_url=job["txt_download_url"]
-        if isinstance(job["txt_download_url"], str)
-        else None,
-        txt_filename=job["txt_filename"]
-        if isinstance(job["txt_filename"], str)
-        else None,
-        summary_download_url=job["summary_download_url"]
-        if isinstance(job["summary_download_url"], str)
-        else None,
-        summary_filename=job["summary_filename"]
-        if isinstance(job["summary_filename"], str)
-        else None,
-        summary_txt_download_url=job["summary_txt_download_url"]
-        if isinstance(job["summary_txt_download_url"], str)
-        else None,
-        summary_txt_filename=job["summary_txt_filename"]
-        if isinstance(job["summary_txt_filename"], str)
-        else None,
-        summary_table_pdf_download_url=job["summary_table_pdf_download_url"]
-        if isinstance(job["summary_table_pdf_download_url"], str)
-        else None,
-        summary_table_pdf_filename=job["summary_table_pdf_filename"]
-        if isinstance(job["summary_table_pdf_filename"], str)
-        else None,
-        summary_preset=job["summary_preset"]
-        if isinstance(job["summary_preset"], str)
-        else None,
-        summary_profile=job["summary_profile"]
-        if isinstance(job["summary_profile"], str)
-        else None,
-        stt_profile=job["stt_profile"]
-        if isinstance(job.get("stt_profile"), str)
-        else None,
-        summary_prompt_template=job["summary_prompt_template"]
-        if isinstance(job.get("summary_prompt_template"), str)
-        else None,
-        auto_generate_fancy_html=bool(job.get("auto_generate_fancy_html")),
-        fancy_html_status=str(job.get("fancy_html_status") or "idle"),
-        fancy_html_error=job["fancy_html_error"]
-        if isinstance(job.get("fancy_html_error"), str)
-        else None,
-        used_bilibili_subtitle=bool(job.get("used_bilibili_subtitle")),
-        already_transcribed=bool(job.get("already_transcribed")),
-        notice=job["notice"] if isinstance(job.get("notice"), str) else None,
-        all_downloads=all_downloads,
-        error=job["error"] if isinstance(job["error"], str) else None,
-        logs=job["logs"] if isinstance(job["logs"], list) else [],
-        stage_durations=job["stage_durations"]
-        if isinstance(job["stage_durations"], dict)
-        else {},
-        created_at=str(job["created_at"]),
-        updated_at=str(job["updated_at"]),
-        author=job["author"] if isinstance(job.get("author"), str) else None,
-        pubdate=job["pubdate"] if isinstance(job.get("pubdate"), str) else None,
-        bvid=job["bvid"] if isinstance(job.get("bvid"), str) else None,
-        title=job["title"] if isinstance(job.get("title"), str) else None,
-    )
+    return _to_process_status_response(job)

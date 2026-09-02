@@ -510,14 +510,18 @@ class BilibiliMonitorService:
         results: Mapping[str, StoredArtifact | Any],
     ) -> None:
         metadata = results.get("_metadata")
+        title = getattr(metadata, "title", "")
         author = getattr(metadata, "author", "")
         pubdate = getattr(metadata, "pubdate", "")
+        tid = getattr(metadata, "tid", 0)
         record_pipeline_run(
             db=self.history_db,
             bvid=bvid,
             results=results,
+            title=title,
             author=author,
             pubdate=pubdate,
+            tid=tid,
             summary_preset=self.config.monitor.summary_preset,
             summary_profile=self.config.monitor.summary_profile,
         )

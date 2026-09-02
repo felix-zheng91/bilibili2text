@@ -6,10 +6,11 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, HTTPException
 
 from b2t.history import infer_run_id
-from b2t.storage import StoredArtifact
-from b2t.storage.base import classify_artifact_filename
+from b2t.storage import ArtifactKind, StoredArtifact
+from b2t.storage.base import resolve_artifact_kind
 from backend.dependencies import get_history_db, get_storage_backend
 from backend.download_registry import download_registry
+from backend.event_stream import event_broker, history_channel
 from backend.schemas import GenerateFancyHtmlRequest, GenerateFancyHtmlResponse
 from backend.services import _merge_history_artifact, _run_fancy_html_only_from_summary
 from backend.settings import get_runtime_app_config
@@ -34,9 +35,9 @@ def generate_fancy_html(payload: GenerateFancyHtmlRequest) -> GenerateFancyHtmlR
 
     if source_artifact is None:
         raise HTTPException(status_code=404, detail="下载链接不存在或已过期")
-    if classify_artifact_filename(source_artifact.filename) not in (
-        "summary",
-        "rag_answer",
+    if resolve_artifact_kind(source_artifact.kind, source_artifact.filename) not in (
+        ArtifactKind.SUMMARY,
+        ArtifactKind.RAG_ANSWER,
     ):
         raise HTTPException(
             status_code=400,
@@ -46,11 +47,7 @@ def generate_fancy_html(payload: GenerateFancyHtmlRequest) -> GenerateFancyHtmlR
     try:
         config = get_runtime_app_config(
             require_public_api_key=True,
-            api_key=(payload.api_key or "").strip() or None,
-            deepseek_api_key=(payload.deepseek_api_key or "").strip() or None,
-            custom_llm_base_url=(payload.custom_llm_base_url or "").strip() or None,
-            custom_llm_api_key=(payload.custom_llm_api_key or "").strip() or None,
-            custom_llm_model=(payload.custom_llm_model or "").strip() or None,
+            **payload.runtime_config_kwargs(),
         )
         storage_backend = get_storage_backend()
     except FileNotFoundError as exc:
@@ -82,6 +79,7 @@ def generate_fancy_html(payload: GenerateFancyHtmlRequest) -> GenerateFancyHtmlR
                 )
 
             db.update_run_fancy_html_status(run_id, status="running", error="")
+            event_broker.publish(history_channel(run_id))
 
             def _run_in_background() -> None:
                 try:
@@ -104,12 +102,14 @@ def generate_fancy_html(payload: GenerateFancyHtmlRequest) -> GenerateFancyHtmlR
                         fancy_html_status="succeeded",
                         fancy_html_error="",
                     )
+                    event_broker.publish(history_channel(run_id))
                 except Exception as exc:
                     db.update_run_fancy_html_status(
                         run_id,
                         status="failed",
                         error=str(exc) or "生成 fancy HTML 失败",
                     )
+                    event_broker.publish(history_channel(run_id))
 
             _RAG_FANCY_EXECUTOR.submit(_run_in_background)
             history_detail = db.get_run_detail(run_id)
@@ -146,6 +146,7 @@ def generate_fancy_html(payload: GenerateFancyHtmlRequest) -> GenerateFancyHtmlR
             )
             if detail is not None:
                 history_detail = _to_history_detail_response(detail)
+                event_broker.publish(history_channel(run_id))
     elif (payload.history_run_id or "").strip():
         detail = _merge_history_artifact(
             run_id=run_id,
@@ -158,6 +159,7 @@ def generate_fancy_html(payload: GenerateFancyHtmlRequest) -> GenerateFancyHtmlR
         )
         if detail is not None:
             history_detail = _to_history_detail_response(detail)
+            event_broker.publish(history_channel(run_id))
 
     download_id = download_registry.store_artifact(
         StoredArtifact(

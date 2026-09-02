@@ -179,6 +179,11 @@ def test_regenerate_same_config_replaces_only_matching_summary_family(
 
     detail = db.get_run_detail("BV1AB411c7mD-source")
     assert detail is not None
+    task = detail.summary_regenerations[0]
+    assert task.summary_preset == "financial_timeline_merge"
+    assert task.summary_profile == "qwen3-6-plus"
+    assert task.status == "succeeded"
+    assert task.error == ""
     stored_keys = {artifact.storage_key for artifact in detail.artifacts}
     assert "source/BV1AB411c7mD_demo.md" in stored_keys
     assert "other/BV1AB411c7mD_demo_summary.md" in stored_keys
@@ -190,4 +195,123 @@ def test_regenerate_same_config_replaces_only_matching_summary_family(
         "old/BV1AB411c7mD_demo_summary_table.md",
         "old/BV1AB411c7mD_demo_summary.png",
         "old/BV1AB411c7mD_demo_summary_timeline.txt",
+    }
+
+
+def test_regenerate_failure_persists_failed_status(tmp_path, monkeypatch) -> None:
+    db = HistoryDB(tmp_path)
+    _seed_history(db)
+
+    monkeypatch.setattr(history, "get_history_db", lambda: db)
+    monkeypatch.setattr(history, "get_runtime_app_config", lambda **kwargs: _config())
+    monkeypatch.setattr(history, "get_storage_backend", lambda: object())
+
+    def fail_generate(**kwargs):
+        running = db.get_run_detail("BV1AB411c7mD-source")
+        assert running is not None
+        assert running.summary_regenerations[0].status == "running"
+        raise RuntimeError("模型服务不可用")
+
+    monkeypatch.setattr(history, "_run_summary_only_from_existing", fail_generate)
+
+    try:
+        history.regenerate_history_summary(
+            "BV1AB411c7mD-source",
+            _regenerate_request(overwrite_existing=True),
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 500
+        assert exc.detail == "模型服务不可用"
+    else:
+        raise AssertionError("expected summary regeneration to fail")
+
+    failed = db.get_run_detail("BV1AB411c7mD-source")
+    assert failed is not None
+    assert failed.summary_regenerations[0].status == "failed"
+    assert failed.summary_regenerations[0].error == "模型服务不可用"
+
+
+def test_regenerate_same_config_rejects_concurrent_request(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db = HistoryDB(tmp_path)
+    _seed_history(db)
+    assert db.try_start_summary_regeneration(
+        "BV1AB411c7mD-source",
+        summary_preset="financial_timeline_merge",
+        summary_profile="qwen3-6-plus",
+    )
+    generated = False
+
+    monkeypatch.setattr(history, "get_history_db", lambda: db)
+    monkeypatch.setattr(history, "get_runtime_app_config", lambda **kwargs: _config())
+    monkeypatch.setattr(history, "get_storage_backend", lambda: object())
+
+    def fake_generate(**kwargs):
+        nonlocal generated
+        generated = True
+        return {}
+
+    monkeypatch.setattr(history, "_run_summary_only_from_existing", fake_generate)
+
+    try:
+        history.regenerate_history_summary(
+            "BV1AB411c7mD-source",
+            _regenerate_request(overwrite_existing=True),
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "正在生成中" in str(exc.detail)
+    else:
+        raise AssertionError("expected concurrent regeneration to be rejected")
+
+    assert generated is False
+
+
+def test_summary_family_prefers_explicit_source_relationships(tmp_path) -> None:
+    db = HistoryDB(tmp_path)
+    db.record_run(
+        run_id="relationship-run",
+        bvid="BV1AB411c7mD",
+        title="relationship",
+        has_summary=True,
+        artifacts=[
+            HistoryArtifact(
+                kind="summary",
+                filename="summary-one.md",
+                storage_key="run/summary-one.md",
+                backend="local",
+            ),
+            HistoryArtifact(
+                kind="summary_timeline",
+                filename="unrelated-name.txt",
+                storage_key="run/chapters.txt",
+                backend="local",
+                derived_from="run/summary-one.md",
+            ),
+            HistoryArtifact(
+                kind="summary_png",
+                filename="summary-one.png",
+                storage_key="run/legacy-summary-one.png",
+                backend="local",
+            ),
+            HistoryArtifact(
+                kind="summary",
+                filename="summary-two.md",
+                storage_key="run/summary-two.md",
+                backend="local",
+            ),
+        ],
+    )
+    detail = db.get_run_detail("relationship-run")
+    assert detail is not None
+    summary = next(
+        item for item in detail.artifacts if item.storage_key == "run/summary-one.md"
+    )
+
+    assert history._summary_family_storage_keys(detail, summary) == {
+        "run/summary-one.md",
+        "run/chapters.txt",
+        "run/legacy-summary-one.png",
     }

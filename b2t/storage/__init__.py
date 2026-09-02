@@ -4,7 +4,13 @@ from pathlib import Path
 
 from b2t.config import AppConfig
 from b2t.storage.alicloud_client import AlicloudStorageBackend
-from b2t.storage.base import PublicURLStorageBackend, StorageBackend, StoredArtifact
+from b2t.storage.base import (
+    SUMMARY_ARTIFACT_KINDS,
+    ArtifactKind,
+    PublicURLStorageBackend,
+    StorageBackend,
+    StoredArtifact,
+)
 from b2t.storage.local import LocalStorageBackend
 from b2t.storage.minio_client import MinIOStorageBackend
 
@@ -41,7 +47,9 @@ def create_storage_backend(config: AppConfig) -> StorageBackend:
 def create_stt_storage_backend(
     config: AppConfig,
 ) -> StorageBackend:
-    selected_backend = config.stt.storage_profile.strip() or config.storage.backend
+    selected_backend = (
+        config.stt.selected_profile.storage_profile.strip() or config.storage.backend
+    )
     return _create_backend_from_storage_section(
         backend_name=selected_backend,
         local_output_dir=config.download.output_dir,
@@ -51,6 +59,8 @@ def create_stt_storage_backend(
 
 
 __all__ = [
+    "SUMMARY_ARTIFACT_KINDS",
+    "ArtifactKind",
     "PublicURLStorageBackend",
     "StorageBackend",
     "StoredArtifact",

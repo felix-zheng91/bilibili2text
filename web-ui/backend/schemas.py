@@ -2,26 +2,68 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from b2t.summarize.llm import validate_summary_prompt_template
 
 
-class ProcessRequest(BaseModel):
-    url: str = Field(..., min_length=1, description="Bilibili 视频 URL")
+class RuntimeCredentialsRequest(BaseModel):
+    api_key: str | None = None
+    deepseek_api_key: str | None = None
+    custom_llm_base_url: str | None = None
+    custom_llm_api_key: str | None = None
+    custom_llm_model: str | None = None
+
+    @field_validator(
+        "api_key",
+        "deepseek_api_key",
+        "custom_llm_base_url",
+        "custom_llm_api_key",
+        "custom_llm_model",
+        mode="before",
+    )
+    @classmethod
+    def _clean_credentials(cls, value: object) -> str | None:
+        cleaned = value.strip() if isinstance(value, str) else ""
+        return cleaned or None
+
+    def runtime_config_kwargs(self) -> dict[str, str | None]:
+        return {
+            "api_key": self.api_key,
+            "deepseek_api_key": self.deepseek_api_key,
+            "custom_llm_base_url": self.custom_llm_base_url,
+            "custom_llm_api_key": self.custom_llm_api_key,
+            "custom_llm_model": self.custom_llm_model,
+        }
+
+
+class SummarySelectionRequest(RuntimeCredentialsRequest):
+    summary_preset: str | None = None
+    summary_profile: str | None = None
+    summary_prompt_template: str | None = None
+
+    @field_validator("summary_preset", "summary_profile", mode="before")
+    @classmethod
+    def _clean_selection(cls, value: object) -> str | None:
+        cleaned = value.strip() if isinstance(value, str) else ""
+        return cleaned or None
+
+    @field_validator("summary_prompt_template", mode="before")
+    @classmethod
+    def _clean_prompt_template(cls, value: object) -> str | None:
+        cleaned = value.strip() if isinstance(value, str) else ""
+        return validate_summary_prompt_template(cleaned) if cleaned else None
+
+
+class ProcessRequest(SummarySelectionRequest):
+    url: str = Field(
+        ...,
+        min_length=1,
+        description="视频或播客 URL（支持 Bilibili、小宇宙、喜马拉雅）",
+    )
     skip_summary: bool = Field(
         default=False,
         description="是否跳过总结步骤",
-    )
-    summary_preset: str | None = Field(
-        default=None,
-        description="总结 preset 名称",
-    )
-    summary_profile: str | None = Field(
-        default=None,
-        description="总结模型 profile 名称",
-    )
-    summary_prompt_template: str | None = Field(
-        default=None,
-        description="本次请求使用的自定义总结模板，必须包含 {content} 占位符",
     )
     stt_profile: str | None = Field(
         default=None,
@@ -35,26 +77,22 @@ class ProcessRequest(BaseModel):
         default=True,
         description="是否优先使用 B 站原生字幕，失败后回退到音频 ASR",
     )
-    api_key: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自带的阿里云 DashScope API Key",
+    include_comments: bool = Field(
+        default=True,
+        description="是否下载并总结支持平台的热门评论",
     )
-    deepseek_api_key: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自带的 DeepSeek API Key（可选，用于 LLM/RAG/Fancy HTML）",
+    comment_limit: int | None = Field(
+        default=200,
+        ge=1,
+        le=1000,
+        description="下载的主评论数量；每条主评论的子评论全部下载；为空表示下载全部主评论",
     )
-    custom_llm_base_url: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自定义 OpenAI-compatible LLM base_url",
-    )
-    custom_llm_api_key: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自定义 OpenAI-compatible LLM API Key",
-    )
-    custom_llm_model: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自定义 OpenAI-compatible LLM model",
-    )
+
+    @field_validator("stt_profile", mode="before")
+    @classmethod
+    def _clean_stt_profile(cls, value: object) -> str | None:
+        cleaned = value.strip() if isinstance(value, str) else ""
+        return cleaned or None
 
 
 class ProcessStartResponse(BaseModel):
@@ -123,8 +161,22 @@ class ProcessStatusResponse(BaseModel):
     pubdate: str | None = None
     bvid: str | None = None
     title: str | None = None
+    duration_seconds: int = Field(default=0, ge=0)
+    tname: str | None = None
+    parent_tname: str | None = None
+    comment_status: Literal[
+        "disabled", "pending", "running", "succeeded", "failed", "unavailable"
+    ] = "disabled"
+    comment_limit: int = Field(default=200, ge=0)
+    comment_count: int = Field(default=0, ge=0)
+    comment_reply_count: int = Field(default=0, ge=0)
+    history_run_id: str | None = None
     is_ephemeral_upload: bool = False
     expires_at: str | None = None
+
+
+class JobSnapshotsResponse(BaseModel):
+    jobs: list[ProcessStatusResponse]
 
 
 class SummaryPresetItemResponse(BaseModel):
@@ -224,6 +276,10 @@ class HistoryItemResponse(BaseModel):
     created_at: str
     has_summary: bool
     file_count: int
+    summary_version_count: int
+    tid: int = 0
+    tname: str = ""
+    parent_tname: str = ""
     record_type: str = "transcription"
 
 
@@ -235,12 +291,47 @@ class HistoryListResponse(BaseModel):
     has_more: bool
 
 
+class HistoryCategoryFilterOptionResponse(BaseModel):
+    tid: int
+    tname: str
+    parent_tid: int = 0
+    parent_tname: str = ""
+    count: int
+    is_parent: bool = False
+
+
+class HistoryAuthorFilterOptionResponse(BaseModel):
+    author: str
+    count: int
+
+
+class HistoryPlatformFilterOptionResponse(BaseModel):
+    platform: str
+    name: str
+    count: int
+
+
+class HistoryFilterOptionsResponse(BaseModel):
+    platforms: list[HistoryPlatformFilterOptionResponse]
+    categories: list[HistoryCategoryFilterOptionResponse]
+    authors: list[HistoryAuthorFilterOptionResponse]
+
+
 class HistoryDetailArtifactResponse(BaseModel):
     kind: str
     filename: str
     download_url: str
     summary_preset: str = ""
     summary_profile: str = ""
+    derived_from: str = ""
+    summary_group_id: str = ""
+
+
+class HistorySummaryRegenerationResponse(BaseModel):
+    summary_preset: str
+    summary_profile: str
+    status: Literal["idle", "running", "succeeded", "failed"]
+    error: str = ""
 
 
 class HistoryDetailResponse(BaseModel):
@@ -258,48 +349,19 @@ class HistoryDetailResponse(BaseModel):
         "idle"
     )
     fancy_html_error: str | None = None
+    summary_regenerations: list[HistorySummaryRegenerationResponse] = Field(
+        default_factory=list
+    )
 
 
-class HistoryRegenerateSummaryRequest(BaseModel):
-    summary_preset: str | None = Field(
-        default=None,
-        description="总结 preset 名称，为空时使用后端默认",
-    )
-    summary_profile: str | None = Field(
-        default=None,
-        description="总结模型 profile 名称，为空时使用后端默认",
-    )
-    summary_prompt_template: str | None = Field(
-        default=None,
-        description="本次重生成使用的自定义总结模板，必须包含 {content} 占位符",
-    )
+class HistoryRegenerateSummaryRequest(SummarySelectionRequest):
     overwrite_existing: bool = Field(
         default=False,
         description="确认覆盖相同模型配置与总结模板生成的已有结果",
     )
-    api_key: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自带的阿里云 DashScope API Key",
-    )
-    deepseek_api_key: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自带的 DeepSeek API Key（可选，用于 LLM/Fancy HTML）",
-    )
-    custom_llm_base_url: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自定义 OpenAI-compatible LLM base_url",
-    )
-    custom_llm_api_key: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自定义 OpenAI-compatible LLM API Key",
-    )
-    custom_llm_model: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自定义 OpenAI-compatible LLM model",
-    )
 
 
-class GenerateFancyHtmlRequest(BaseModel):
+class GenerateFancyHtmlRequest(RuntimeCredentialsRequest):
     download_id: str = Field(..., description="总结 Markdown 的下载 ID")
     history_run_id: str | None = Field(
         default=None,
@@ -312,26 +374,6 @@ class GenerateFancyHtmlRequest(BaseModel):
     summary_profile: str | None = Field(
         default=None,
         description="生成 fancy HTML 使用的 profile；为空时使用后端默认",
-    )
-    api_key: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自带的阿里云 DashScope API Key",
-    )
-    deepseek_api_key: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自带的 DeepSeek API Key（可选，用于 Fancy HTML）",
-    )
-    custom_llm_base_url: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自定义 OpenAI-compatible LLM base_url",
-    )
-    custom_llm_api_key: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自定义 OpenAI-compatible LLM API Key",
-    )
-    custom_llm_model: str | None = Field(
-        default=None,
-        description="open-public 模式下用户自定义 OpenAI-compatible LLM model",
     )
 
 
