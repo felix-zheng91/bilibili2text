@@ -11,7 +11,6 @@ from b2t.config import (
     STTProfile,
     SummarizeConfig,
     SummarizeModelProfile,
-    flatten_stt_profile,
     load_config,
 )
 from backend import PROJECT_ROOT
@@ -24,6 +23,7 @@ WEB_UI_MODE_ENV = "B2T_WEB_UI_MODE"
 OPEN_PUBLIC_API_KEY_ENV = "B2T_OPEN_PUBLIC_API_KEY"
 OPEN_PUBLIC_DEEPSEEK_API_KEY_ENV = "B2T_OPEN_PUBLIC_DEEPSEEK_API_KEY"
 TRANSCRIPTION_BVID_LOCK_TIMEOUT_ENV = "B2T_TRANSCRIPTION_BVID_LOCK_TIMEOUT_SECONDS"
+STOCK_STATUS_SYNC_TIMEOUT_ENV = "B2T_STOCK_STATUS_SYNC_TIMEOUT_SECONDS"
 EPHEMERAL_UPLOAD_TTL_SECONDS_ENV = "B2T_EPHEMERAL_UPLOAD_TTL_SECONDS"
 EPHEMERAL_UPLOAD_CLEANUP_INTERVAL_SECONDS_ENV = (
     "B2T_EPHEMERAL_UPLOAD_CLEANUP_INTERVAL_SECONDS"
@@ -43,6 +43,12 @@ OPEN_PUBLIC_CUSTOM_LLM_PROFILE = "open_public_custom_llm"
 TRANSCRIPTION_BVID_LOCK_TIMEOUT_SECONDS = max(
     1,
     int(os.environ.get(TRANSCRIPTION_BVID_LOCK_TIMEOUT_ENV, "600").strip() or "600"),
+)
+STOCK_STATUS_MAX_WORKERS = 4
+BLOCKING_YFINANCE_TIMEOUT_SECONDS = 120.0
+BACKGROUND_HYBRID_SYNC_TIMEOUT_SECONDS = max(
+    0.0,
+    float(os.environ.get(STOCK_STATUS_SYNC_TIMEOUT_ENV, "30").strip() or "30"),
 )
 EPHEMERAL_UPLOAD_TTL_SECONDS = max(
     1,
@@ -181,6 +187,8 @@ def _pick_qwen_stt_profile(stt: STTConfig) -> STTProfile:
         groq_chunk_length=stt.groq_chunk_length,
         groq_overlap=stt.groq_overlap,
         groq_bitrate=stt.groq_bitrate,
+        diarization_enabled=stt.diarization_enabled,
+        speaker_count=stt.speaker_count,
     )
 
 
@@ -228,41 +236,16 @@ def build_open_public_config(
     custom_llm_api_key: str = "",
     custom_llm_model: str = "",
 ) -> AppConfig:
-    # Preserve all admin-configured STT profiles, injecting user API keys
-    # where applicable (qwen profiles use the DashScope key).
-    public_stt_profiles: dict[str, STTProfile] = {}
-    for name, profile in config.stt.profiles.items():
-        provider = profile.provider.strip().lower()
-        if provider == "qwen":
-            public_stt_profiles[name] = replace(profile, qwen_api_key=api_key)
-        elif provider == "groq":
-            # Groq needs its own API key; preserve admin key for now.
-            public_stt_profiles[name] = profile
-        elif provider == "volc":
-            # Volc needs its own API key; preserve admin key for now.
-            public_stt_profiles[name] = profile
-        else:
-            public_stt_profiles[name] = profile
-
-    if not public_stt_profiles:
-        # Fallback: create a default qwen profile.
-        public_stt_profiles["open_public_qwen"] = STTProfile(
-            provider="qwen",
-            qwen_api_key=api_key,
-        )
-
-    selected_stt_profile_name = config.stt.profile
-    if selected_stt_profile_name not in public_stt_profiles:
-        selected_stt_profile_name = next(iter(public_stt_profiles))
-    selected_stt_profile = public_stt_profiles[selected_stt_profile_name]
-
-    public_stt_config = flatten_stt_profile(
-        STTConfig(
-            profile=selected_stt_profile_name,
-            profiles=public_stt_profiles,
-        ),
-        selected_stt_profile,
-        selected_stt_profile_name,
+    base_stt_profile = _pick_qwen_stt_profile(config.stt)
+    public_stt_profile = replace(
+        base_stt_profile,
+        provider="qwen",
+        qwen_api_key=api_key,
+        groq_api_key="",
+    )
+    public_stt_config = STTConfig(
+        profile="open_public_qwen",
+        profiles={"open_public_qwen": public_stt_profile},
     )
 
     # Build summarize profiles by injecting user API keys into the

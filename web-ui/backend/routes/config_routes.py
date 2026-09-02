@@ -130,8 +130,7 @@ def stt_profiles() -> STTProfileListResponse:
         for name, profile in config.stt.profiles.items()
         # Hide bare default profiles that have no API key configured.
         if not (
-            name in _DEFAULT_STT_PROFILE_NAMES
-            and not _stt_profile_has_api_key(profile)
+            name in _DEFAULT_STT_PROFILE_NAMES and not _stt_profile_has_api_key(profile)
         )
     ]
     return STTProfileListResponse(

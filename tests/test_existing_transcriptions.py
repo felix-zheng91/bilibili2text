@@ -1,9 +1,11 @@
 import sys
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "web-ui"))
 
+from backend import services as services_module
 from backend.existing_transcriptions import (
     ExistingTranscriptionService,
     _has_current_timeline_schema,
@@ -11,6 +13,7 @@ from backend.existing_transcriptions import (
     _summary_requires_video_timestamps,
 )
 
+from b2t.cancellation import CancellationToken
 from b2t.config import (
     AppConfig,
     ConverterConfig,
@@ -24,8 +27,11 @@ from b2t.config import (
     SummaryPreset,
     SummaryPresetsConfig,
 )
+from b2t.download.metadata import VideoMetadata
+from b2t.download.platform import Platform, PlatformMetadata
 from b2t.history import HistoryArtifact, HistoryDetail
 from b2t.storage.base import StoredArtifact
+from b2t.storage.local import LocalStorageBackend
 
 
 def _config() -> AppConfig:
@@ -211,6 +217,7 @@ def test_existing_transcription_reuses_same_summary_config_without_regenerating(
     )
     assert captured_update["status"] == "succeeded"
     assert captured_update["stage_label"] == "已命中历史总结结果"
+    assert captured_update["history_run_id"] == "BV1bLdgBEEKu-11111111"
     assert (
         "已存在使用模型配置 qwen3-5-plus 与总结模板 financial_timeline_merge"
         in captured_update["notice"]
@@ -324,3 +331,159 @@ def test_timeline_summary_skips_old_cached_transcription() -> None:
     )
 
     assert handled is False
+
+
+def test_summary_only_fetches_xiaoyuzhou_metadata_without_redownloading_audio(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "xiaoyuzhou_episode-1-11111111"
+    source_dir.mkdir()
+    markdown_path = source_dir / "xiaoyuzhou_episode-1_投资实战派_E191_transcription.md"
+    markdown_path.write_text("转录内容", encoding="utf-8")
+    existing_results = {
+        "markdown": StoredArtifact(
+            filename=markdown_path.name,
+            storage_key=str(markdown_path),
+            backend="local",
+        )
+    }
+    detail = HistoryDetail(
+        run_id="xiaoyuzhou_episode-1-11111111",
+        bvid="xiaoyuzhou_episode-1",
+        title="",
+        author="Unknown",
+        pubdate="",
+        created_at="2026-07-20T00:00:00+00:00",
+        has_summary=False,
+        artifacts=[],
+    )
+
+    class FakeHistoryDB:
+        def get_run_detail(self, run_id: str):
+            assert run_id == "xiaoyuzhou_episode-1-11111111"
+            return detail
+
+    monkeypatch.setattr(services_module, "get_history_db", lambda: FakeHistoryDB())
+    monkeypatch.setattr(
+        "b2t.download.xiaoyuzhou.fetch_xiaoyuzhou_metadata",
+        lambda episode_id: PlatformMetadata(
+            platform=Platform.XIAOYUZHOU,
+            platform_id=episode_id,
+            title="投资实战派 — E191 AI四大半导体新方向",
+            author="wong永庆",
+            pubdate="2026-07-19 23:54:05",
+            pubdate_timestamp=1784505245,
+        ),
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_summarize(*args, **kwargs):
+        captured["metadata"] = kwargs["metadata"]
+        captured["markdown_name"] = Path(args[0]).name
+        summary_path = Path(args[0]).with_name(f"{Path(args[0]).stem}_summary.md")
+        summary_path.write_text("# 总结\n", encoding="utf-8")
+        return summary_path
+
+    monkeypatch.setattr(
+        services_module,
+        "summarize_with_comment_viewpoints",
+        fake_summarize,
+    )
+    monkeypatch.setattr(
+        services_module,
+        "export_summary_table_without_video_time",
+        lambda *args, **kwargs: None,
+    )
+
+    config = replace(
+        _config(),
+        download=DownloadConfig(output_dir=str(tmp_path / "outputs")),
+    )
+    results = services_module._run_summary_only_from_existing(
+        bvid="xiaoyuzhou_episode-1",
+        storage_backend=LocalStorageBackend(),
+        config=config,
+        existing_results=existing_results,
+        summary_preset="financial_timeline_merge",
+        summary_profile="qwen3-5-plus",
+    )
+
+    metadata = captured["metadata"]
+    assert isinstance(metadata, VideoMetadata)
+    assert metadata.author == "wong永庆"
+    assert metadata.pubdate == "2026-07-19 23:54:05"
+    assert captured["markdown_name"] == "xiaoyuzhou_episode-1_投资实战派 — E191 AI.md"
+    assert results["summary"].filename == (
+        "xiaoyuzhou_episode-1_投资实战派 — E191 AI_summary.md"
+    )
+    assert isinstance(results["_metadata"], VideoMetadata)
+    assert services_module._should_refresh_existing_summary_metadata(
+        bvid="xiaoyuzhou_episode-1",
+        existing_results=existing_results,
+    )
+
+
+def test_existing_transcription_cancellation_stops_before_summary_persistence(
+    monkeypatch,
+) -> None:
+    token = CancellationToken()
+    artifacts = {
+        "markdown": StoredArtifact(
+            filename="demo.md",
+            storage_key="run/demo.md",
+            backend="memory",
+        )
+    }
+
+    class FakeStorage:
+        def find_existing_transcription(self, bvid: str):
+            return artifacts
+
+    monkeypatch.setattr(
+        "backend.existing_transcriptions._find_existing_summary_results_for_selection",
+        lambda **kwargs: None,
+    )
+
+    def cancel_during_summary(**kwargs):
+        assert kwargs["cancellation_token"] is token
+        token.cancel()
+        token.raise_if_cancelled()
+
+    monkeypatch.setattr(
+        "backend.existing_transcriptions._run_summary_only_from_existing",
+        cancel_during_summary,
+    )
+    monkeypatch.setattr(
+        "backend.existing_transcriptions._record_history",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("cancelled summary must not be persisted")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.existing_transcriptions.postprocess_scheduler.trigger_rag_index",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("cancelled summary must not be indexed")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.existing_transcriptions._update_job",
+        lambda *args, **kwargs: None,
+    )
+
+    handled = ExistingTranscriptionService().handle_if_existing(
+        job_id="job-cancelled",
+        bvid="BV1bLdgBEEKu",
+        storage_backend=FakeStorage(),
+        config=_config(),
+        skip_summary=False,
+        summary_preset="financial_timeline_merge",
+        summary_profile="qwen3-5-plus",
+        summary_prompt_template=None,
+        auto_generate_fancy_html=False,
+        cancellation_token=token,
+    )
+
+    assert handled is True
+    assert token.is_cancelled()

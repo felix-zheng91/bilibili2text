@@ -481,15 +481,19 @@ def _run_pipeline_with_args(args: CLIArgs, console: Console) -> int:
     try:
         # Extract metadata from results
         metadata = results.get("_metadata")
+        title = metadata.title if metadata else ""
         author = metadata.author if metadata else ""
         pubdate = metadata.pubdate if metadata else ""
+        tid = metadata.tid if metadata else 0
 
         record_pipeline_run(
             db=HistoryDB(db_dir),
             bvid=bvid,
             results=results,
+            title=title,
             author=author,
             pubdate=pubdate,
+            tid=tid,
             summary_preset=args.summary_preset,
             summary_profile=args.summary_profile,
         )

@@ -24,6 +24,7 @@ wheels/
 # Virtual environments
 .venv/
 .worktrees/
+.playwright-browsers/
 
 # Runtime data and generated outputs
 /test-audio/
@@ -34,9 +35,11 @@ wheels/
 !/db_data/.gitkeep
 /chroma_data/*
 !/chroma_data/.gitkeep
+/logs/
 /web-ui/logs/
 /input.md
 /output.*
+output/
 /raw*.md
 /raw*.txt
 /terminal_input_answer.md

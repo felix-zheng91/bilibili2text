@@ -1,19 +1,17 @@
 <script setup>
   import { computed, ref } from 'vue'
-  import {
-    AlertCircle,
-    Braces,
-    ChevronDown,
-    File,
-    Eye,
-    FileText,
-    Image as ImageIcon,
-    LoaderCircle,
-    Music,
-    Trash2,
-    Type
-  } from 'lucide-vue-next'
+  import { LoaderCircle, Trash2 } from 'lucide-vue-next'
+  import ArtifactActions from './artifacts/ArtifactActions.vue'
+  import ConfirmDialog from './common/ConfirmDialog.vue'
+  import InlineNotice from './common/InlineNotice.vue'
+  import { artifactApi, historyApi, summaryApi } from '../api'
   import { useConversion } from '../composables/useConversion'
+  import {
+    CUSTOM_LLM_PROFILE_NAME,
+    usePublicCredentials
+  } from '../composables/usePublicCredentials'
+  import { useRuntimeFeatures } from '../composables/useRuntimeFeatures'
+  import { useSummaryConfig } from '../composables/useSummaryConfig'
   import { resolveFileType, buildArtifactDisplayName } from '../utils/fileUtils'
 
   const props = defineProps({
@@ -21,21 +19,9 @@
       type: Array,
       required: true
     },
-    summaryPresets: {
-      type: Array,
-      default: () => []
-    },
-    summaryDefaultPreset: {
-      type: String,
-      default: ''
-    },
     selectedSummaryPreset: {
       type: String,
       default: ''
-    },
-    summaryProfiles: {
-      type: Array,
-      default: () => []
     },
     selectedSummaryProfile: {
       type: String,
@@ -64,24 +50,34 @@
         'summary_table_pdf',
         'summary_timeline'
       ]
-    },
-    allowDelete: {
-      type: Boolean,
-      default: true
-    },
-    requiresApiKey: {
-      type: Boolean,
-      default: false
     }
   })
 
   const emit = defineEmits(['artifactDeleted', 'artifactGenerated'])
-  const LOCAL_API_KEY_KEY = 'b2t.public-api-key'
-  const LOCAL_DEEPSEEK_API_KEY_KEY = 'b2t.public-deepseek-api-key'
-  const LOCAL_CUSTOM_LLM_BASE_URL_KEY = 'b2t.public-custom-llm-base-url'
-  const LOCAL_CUSTOM_LLM_API_KEY_KEY = 'b2t.public-custom-llm-api-key'
-  const LOCAL_CUSTOM_LLM_MODEL_KEY = 'b2t.public-custom-llm-model'
-  const CUSTOM_LLM_PROFILE_NAME = 'open_public_custom_llm'
+  const { runtimeFeatures } = useRuntimeFeatures()
+  const allowDelete = computed(() => runtimeFeatures.value.allow_delete)
+  const requiresApiKey = computed(
+    () => runtimeFeatures.value.requires_user_api_key
+  )
+  const {
+    summaryPresets,
+    summaryDefaultPreset,
+    summaryProfiles,
+    selectedSummaryPreset: globalSelectedSummaryPreset,
+    selectedSummaryProfile: globalSelectedSummaryProfile
+  } = useSummaryConfig()
+  const {
+    getApiKey,
+    getDeepseekApiKey,
+    getCustomLlmConfig,
+    getCustomLlmPayload
+  } = usePublicCredentials()
+  const effectiveSelectedSummaryPreset = computed(
+    () => props.selectedSummaryPreset || globalSelectedSummaryPreset.value
+  )
+  const effectiveSelectedSummaryProfile = computed(
+    () => props.selectedSummaryProfile || globalSelectedSummaryProfile.value
+  )
 
   const { conversionError, convertAndDownload, isConverting, download } =
     useConversion()
@@ -94,68 +90,15 @@
   const previewError = ref('')
   const openPngMenuKey = ref('')
 
-  const formatIconMap = {
-    markdown: FileText,
-    txt: Type,
-    pdf: FileText,
-    html: FileText,
-    png: ImageIcon,
-    json: Braces,
-    音频: Music,
-    audio: Music
-  }
-
-  const normalizeFormatKey = (value) => (value || '').trim().toLowerCase()
-
-  const formatLabelMap = {
-    markdown: 'Markdown',
-    txt: 'TXT',
-    pdf: 'PDF',
-    html: 'HTML',
-    png: 'PNG',
-    json: 'JSON',
-    音频: '音频',
-    audio: '音频'
-  }
-
-  const getFormatIcon = (format) =>
-    formatIconMap[normalizeFormatKey(format)] || File
-
-  const getFormatLabel = (format) =>
-    formatLabelMap[normalizeFormatKey(format)] || format || '文件'
-
-  const readLocalStorage = (key) => {
-    try {
-      return (window.localStorage.getItem(key) || '').trim()
-    } catch {
-      return ''
-    }
-  }
-
-  const getCustomLlmPayload = () => {
-    if (!props.requiresApiKey) {
-      return {
-        custom_llm_base_url: null,
-        custom_llm_api_key: null,
-        custom_llm_model: null
-      }
-    }
-    return {
-      custom_llm_base_url:
-        readLocalStorage(LOCAL_CUSTOM_LLM_BASE_URL_KEY) || null,
-      custom_llm_api_key:
-        readLocalStorage(LOCAL_CUSTOM_LLM_API_KEY_KEY) || null,
-      custom_llm_model: readLocalStorage(LOCAL_CUSTOM_LLM_MODEL_KEY) || null
-    }
-  }
-
   const resolveSummaryPresetLabel = (presetName) => {
     let effectiveName = (presetName || '').trim()
     if (!effectiveName || effectiveName === 'default') {
       effectiveName =
-        props.summaryDefaultPreset || props.selectedSummaryPreset || 'default'
+        summaryDefaultPreset.value ||
+        effectiveSelectedSummaryPreset.value ||
+        'default'
     }
-    const matched = props.summaryPresets.find(
+    const matched = summaryPresets.value.find(
       (item) => item.name === effectiveName
     )
     if (matched && typeof matched.label === 'string' && matched.label.trim()) {
@@ -201,7 +144,7 @@
     if (!effectiveName) {
       return ''
     }
-    const matched = props.summaryProfiles.find(
+    const matched = summaryProfiles.value.find(
       (item) => item.name === effectiveName
     )
     if (matched?.name === CUSTOM_LLM_PROFILE_NAME) {
@@ -211,7 +154,7 @@
       return matched.name.trim()
     }
     if (effectiveName === CUSTOM_LLM_PROFILE_NAME) {
-      const model = readLocalStorage(LOCAL_CUSTOM_LLM_MODEL_KEY)
+      const model = getCustomLlmConfig().model
       return model ? `custom(${model})` : 'custom'
     }
     return effectiveName
@@ -250,6 +193,12 @@
     return ''
   }
 
+  const storageBasename = (value) =>
+    String(value || '')
+      .replace(/\\/g, '/')
+      .split('/')
+      .pop()
+
   const displayItems = computed(() => {
     const formatPriority = {
       Markdown: 0,
@@ -262,19 +211,19 @@
     }
     const kindBaseOrder = {
       markdown: 100,
-      summary: 200,
-      summary_no_table: 210,
-      summary_png: 211,
-      summary_no_table_png: 212,
-      summary_fancy_html: 220,
-      summary_table_md: 230,
-      summary_table_png: 231,
-      summary_table_pdf: 231,
-      summary_timeline: 240,
-      text: 300,
-      summary_text: 310,
-      json: 400,
-      audio: 500,
+      text: 110,
+      json: 200,
+      summary: 300,
+      summary_no_table: 310,
+      summary_png: 311,
+      summary_no_table_png: 312,
+      summary_fancy_html: 320,
+      summary_table_md: 330,
+      summary_table_png: 331,
+      summary_table_pdf: 331,
+      summary_timeline: 340,
+      summary_text: 350,
+      audio: 400,
       rag_answer: 50
     }
 
@@ -321,6 +270,8 @@
           `${(item.presetName || '').trim()}::${(item.summaryProfile || '').trim()}`,
         summaryFamilyKey:
           overrides.summaryFamilyKey || resolveSummaryFamilyKey(item, kind),
+        derivedFrom: overrides.derivedFrom || item.derivedFrom || '',
+        summaryGroupId: overrides.summaryGroupId || item.summaryGroupId || '',
         summaryRowId:
           overrides.summaryRowId ||
           (kind === 'summary'
@@ -339,7 +290,6 @@
           kind === 'summary_no_table_png' ||
           kind === 'summary_fancy_html',
         primaryTargetFormat: kind === 'summary_no_table' ? 'md_no_table' : '',
-        noTableBadge: kind === 'summary_no_table',
         derivedFromSummary: isDerivedFromSummary
       }
     }
@@ -353,6 +303,8 @@
     )
     const summaryRowsByFamily = new Map()
     const summaryRowsBySignature = new Map()
+    const summaryRowsByFilename = new Map()
+    const summaryRowsByGroup = new Map()
 
     // Phase 1: build summary roots and synthetic summary_no_table rows.
     let summaryIndex = 0
@@ -370,9 +322,14 @@
         })
         rows.push(summaryRow)
 
+        if (item.summaryGroupId) {
+          summaryRowsByGroup.set(item.summaryGroupId, summaryRow)
+        }
+
         if (familyKey) {
           summaryRowsByFamily.set(`${familyKey}::${signature}`, summaryRow)
         }
+        summaryRowsByFilename.set(`${item.filename}::${signature}`, summaryRow)
         const bucket = summaryRowsBySignature.get(signature) || []
         bucket.push(summaryRow)
         summaryRowsBySignature.set(signature, bucket)
@@ -387,7 +344,8 @@
               order: summaryRow.order + 0.1,
               parentSummaryRowId: summaryId,
               summarySignature: signature,
-              summaryFamilyKey: familyKey
+              summaryFamilyKey: familyKey,
+              summaryGroupId: item.summaryGroupId || ''
             })
           )
         }
@@ -410,9 +368,19 @@
         const signature = `${(item.presetName || '').trim()}::${(item.summaryProfile || '').trim()}`
         const familyKey = resolveSummaryFamilyKey(item, item.kind)
         const compositeKey = familyKey ? `${familyKey}::${signature}` : ''
-        let parentSummary = compositeKey
-          ? summaryRowsByFamily.get(compositeKey) || null
+        const explicitParentFilename = storageBasename(item.derivedFrom)
+        let parentSummary = item.summaryGroupId
+          ? summaryRowsByGroup.get(item.summaryGroupId) || null
           : null
+        if (!parentSummary && explicitParentFilename) {
+          parentSummary =
+            summaryRowsByFilename.get(
+              `${explicitParentFilename}::${signature}`
+            ) || null
+        }
+        if (!parentSummary && compositeKey) {
+          parentSummary = summaryRowsByFamily.get(compositeKey) || null
+        }
         if (!parentSummary) {
           const sameSignature = summaryRowsBySignature.get(signature) || []
           parentSummary =
@@ -437,6 +405,7 @@
             parentSummaryRowId: parentSummary?.summaryRowId || '',
             summarySignature: signature,
             summaryFamilyKey: familyKey,
+            summaryGroupId: item.summaryGroupId || '',
             order: parentSummary
               ? parentSummary.order + derivedOffset
               : undefined
@@ -455,18 +424,31 @@
       return a.order - b.order
     })
 
-    const summaryNameById = new Map(
-      sortedRows
-        .filter((item) => item.kind === 'summary' && item.summaryRowId)
-        .map((item) => [item.summaryRowId, item.displayName])
-    )
+    const summaryRoots = sortedRows.filter((item) => item.kind === 'summary')
+    if (summaryRoots.length === 0) {
+      return sortedRows
+    }
 
-    return sortedRows.map((item) => ({
-      ...item,
-      parentSummaryName: item.parentSummaryRowId
-        ? summaryNameById.get(item.parentSummaryRowId) || ''
-        : ''
-    }))
+    const childCounts = new Map()
+    for (const item of sortedRows) {
+      if (!item.parentSummaryRowId) continue
+      childCounts.set(
+        item.parentSummaryRowId,
+        (childCounts.get(item.parentSummaryRowId) || 0) + 1
+      )
+    }
+
+    let summaryGroupIndex = 0
+    return sortedRows.map((item) => {
+      if (item.kind !== 'summary') return item
+      summaryGroupIndex += 1
+      return {
+        ...item,
+        showSummaryGroupHeading: true,
+        summaryGroupIndex,
+        summaryGroupFileCount: 1 + (childCounts.get(item.summaryRowId) || 0)
+      }
+    })
   })
 
   const canConvert = (kind) => {
@@ -516,28 +498,12 @@
       noTableConvertKey(item.downloadId, targetFormat)
     )
 
-  const requestConvert = async (
-    downloadId,
-    targetFormat,
-    extraPayload = {}
-  ) => {
-    const resp = await fetch('/api/convert', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        download_id: downloadId,
-        target_format: targetFormat,
-        ...extraPayload
-      })
+  const requestConvert = async (downloadId, targetFormat, extraPayload = {}) =>
+    artifactApi.convert({
+      download_id: downloadId,
+      target_format: targetFormat,
+      ...extraPayload
     })
-    const data = await resp.json()
-    if (!resp.ok) {
-      throw new Error(data.detail || '转换失败')
-    }
-    return data
-  }
 
   const extractDownloadId = (downloadUrl) => {
     if (typeof downloadUrl !== 'string') {
@@ -564,7 +530,9 @@
         url: artifact.download_url,
         filename: artifact.filename,
         presetName: artifact.summary_preset || '',
-        summaryProfile: artifact.summary_profile || ''
+        summaryProfile: artifact.summary_profile || '',
+        derivedFrom: artifact.derived_from || '',
+        summaryGroupId: artifact.summary_group_id || ''
       }
     ]
   }
@@ -610,8 +578,11 @@
   const previewRenderedHtml = (item) => {
     previewError.value = ''
     const sourceVariant =
-      item.kind === 'summary_no_table' ? '?source_variant=summary_no_table' : ''
-    const previewUrl = `/api/preview/html/${encodeURIComponent(item.downloadId)}${sourceVariant}`
+      item.kind === 'summary_no_table' ? 'summary_no_table' : ''
+    const previewUrl = artifactApi.renderedPreviewUrl(
+      item.downloadId,
+      sourceVariant
+    )
     const opened = window.open(previewUrl, '_blank')
     if (opened) {
       opened.opener = null
@@ -622,7 +593,7 @@
 
   const previewTimelineText = (item) => {
     previewError.value = ''
-    const previewUrl = `/api/preview/txt/${encodeURIComponent(item.downloadId)}`
+    const previewUrl = artifactApi.timelinePreviewUrl(item.downloadId)
     const opened = window.open(previewUrl, '_blank')
     if (opened) {
       opened.opener = null
@@ -641,30 +612,18 @@
     fancyGenerating.value.add(key)
     conversionError.value = ''
     try {
-      const resp = await fetch('/api/summary/fancy-html', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          download_id: item.downloadId,
-          history_run_id: props.historyRunId || null,
-          summary_preset: item.presetName || null,
-          summary_profile:
-            item.summaryProfile || props.selectedSummaryProfile || null,
-          api_key: props.requiresApiKey
-            ? readLocalStorage(LOCAL_API_KEY_KEY) || null
-            : null,
-          deepseek_api_key: props.requiresApiKey
-            ? readLocalStorage(LOCAL_DEEPSEEK_API_KEY_KEY) || null
-            : null,
-          ...getCustomLlmPayload()
-        })
+      const data = await summaryApi.generateFancyHtml({
+        download_id: item.downloadId,
+        history_run_id: props.historyRunId || null,
+        summary_preset: item.presetName || null,
+        summary_profile:
+          item.summaryProfile || effectiveSelectedSummaryProfile.value || null,
+        api_key: requiresApiKey.value ? getApiKey() || null : null,
+        deepseek_api_key: requiresApiKey.value
+          ? getDeepseekApiKey() || null
+          : null,
+        ...getCustomLlmPayload(requiresApiKey.value)
       })
-      const data = await resp.json()
-      if (!resp.ok) {
-        throw new Error(data.detail || '生成 Fancy HTML 失败')
-      }
       if (data.history_detail) {
         emit('artifactGenerated', data.history_detail)
       } else {
@@ -674,7 +633,8 @@
           filename: data.filename,
           summary_preset: item.presetName || '',
           summary_profile:
-            item.summaryProfile || props.selectedSummaryProfile || ''
+            item.summaryProfile || effectiveSelectedSummaryProfile.value || '',
+          summary_group_id: item.summaryGroupId || ''
         })
       }
       download(data.download_url, data.filename)
@@ -724,7 +684,7 @@
   }
 
   const canDeleteMarkdownArtifact = (item) => {
-    if (!props.allowDelete) {
+    if (!allowDelete.value) {
       return false
     }
     if (!props.historyRunId) {
@@ -735,7 +695,7 @@
 
   const isDeleting = (item) => deletingKeys.value.has(item.key)
 
-  const isFancyHtmlArtifact = (item) => item.kind === 'summary_fancy_html'
+  const isFancyHtmlArtifact = (item) => item?.kind === 'summary_fancy_html'
 
   const requestDeleteArtifact = (item) => {
     if (!canDeleteMarkdownArtifact(item) || isDeleting(item)) {
@@ -831,16 +791,10 @@
     deleteError.value = ''
     deletingKeys.value.add(item.key)
     try {
-      const resp = await fetch(
-        `/api/history/${encodeURIComponent(props.historyRunId)}/artifacts/${encodeURIComponent(item.downloadId)}`,
-        {
-          method: 'DELETE'
-        }
+      const data = await historyApi.deleteArtifact(
+        props.historyRunId,
+        item.downloadId
       )
-      const data = await resp.json()
-      if (!resp.ok) {
-        throw new Error(data.detail || '删除文件失败')
-      }
       emit('artifactDeleted', data)
       deleteConfirmItem.value = null
     } catch (err) {
@@ -853,342 +807,144 @@
 
 <template>
   <div class="file-list">
-    <p v-if="conversionError" class="inline-error">
-      <AlertCircle :size="16" />
-      <span>{{ conversionError }}</span>
-    </p>
-    <p v-if="deleteError" class="inline-error">
-      <AlertCircle :size="16" />
-      <span>{{ deleteError }}</span>
-    </p>
-    <p v-if="previewError" class="inline-error">
-      <AlertCircle :size="16" />
-      <span>{{ previewError }}</span>
-    </p>
+    <InlineNotice v-if="conversionError">{{ conversionError }}</InlineNotice>
+    <InlineNotice v-if="deleteError">{{ deleteError }}</InlineNotice>
+    <InlineNotice v-if="previewError">{{ previewError }}</InlineNotice>
 
     <div v-if="displayItems.length > 0" class="all-downloads">
       <p class="all-downloads-title">{{ title }}</p>
       <ul class="all-download-list">
-        <li
-          v-for="item in displayItems"
-          :key="item.key"
-          :class="[
-            'all-download-item',
-            {
-              'all-download-item-wide': item.isWideLayout,
-              'all-download-item-derived': item.derivedFromSummary
-            }
-          ]"
-        >
-          <div class="all-download-main">
-            <div class="all-download-title-row">
-              <p class="all-download-name">{{ item.displayName }}</p>
-              <button
-                v-if="canDeleteMarkdownArtifact(item)"
-                class="all-download-delete-icon"
-                type="button"
-                :disabled="isDeleting(item)"
-                :title="
-                  item.kind === 'summary_fancy_html'
-                    ? '删除该 Fancy HTML'
-                    : '删除该总结'
-                "
-                :aria-label="
-                  item.kind === 'summary_fancy_html'
-                    ? '删除该 Fancy HTML'
-                    : '删除该总结'
-                "
-                @click="requestDeleteArtifact(item)"
-              >
-                <LoaderCircle v-if="isDeleting(item)" :size="14" class="spin" />
-                <Trash2 v-else :size="14" />
-              </button>
+        <template v-for="item in displayItems" :key="item.key">
+          <li v-if="item.showSummaryGroupHeading" class="summary-group-heading">
+            <div class="summary-group-identity">
+              <span>总结版本 {{ item.summaryGroupIndex }}</span>
+              <strong class="summary-context-preset">{{
+                item.presetLabel || '默认模板'
+              }}</strong>
+              <i aria-hidden="true"></i>
+              <strong class="summary-context-profile">{{
+                item.modelProfileLabel || '默认模型'
+              }}</strong>
             </div>
-            <span class="all-download-type">{{ item.fileType }}</span>
-            <span
-              v-if="item.presetLabel"
-              class="all-download-type all-download-type-preset"
-            >
-              {{ item.presetLabel }}
-            </span>
-            <span
-              v-if="item.modelProfileLabel"
-              class="all-download-type all-download-type-profile"
-            >
-              {{ item.modelProfileLabel }}
-            </span>
-            <span
-              v-if="item.derivedFromSummary"
-              class="all-download-type all-download-type-derived"
-            >
-              派生自总结
-            </span>
-            <span v-if="item.noTableBadge" class="all-download-type"
-              >无表格</span
-            >
-            <p v-if="item.derivedFromSummary" class="all-download-derived-note">
-              来源：{{
-                item.parentSummaryName || '对应总结'
-              }}。删除父总结将同时清理此派生文件。
-            </p>
-          </div>
-          <div class="all-download-actions">
-            <button
-              class="download download-sm"
-              type="button"
-              :disabled="isPrimaryConverting(item)"
-              @click="handlePrimaryAction(item)"
-            >
-              <LoaderCircle
-                v-if="isPrimaryConverting(item)"
-                :size="14"
-                class="spin"
-              />
-              <template v-else-if="item.kind === 'summary_fancy_html'">
-                <Eye :size="14" />
-                <span>HTML Preview</span>
-              </template>
-              <template v-else-if="isTimelineArtifact(item)">
-                <Eye :size="14" />
-                <span>TXT Preview</span>
-              </template>
-              <template v-else>
-                <component :is="getFormatIcon(item.fileType)" :size="14" />
-                <span>{{ getFormatLabel(item.fileType) }}</span>
-              </template>
-            </button>
-            <div
-              v-if="item.kind === 'summary_fancy_html'"
-              class="png-export-menu"
-              :class="{ 'png-export-menu-open': isPngMenuOpen(item) }"
-            >
-              <button
-                class="download download-sm png-export-trigger"
-                type="button"
-                :disabled="isAnyPngModeConverting(item)"
-                :aria-expanded="isPngMenuOpen(item)"
-                aria-haspopup="menu"
-                @click="togglePngMenu(item)"
-              >
-                <LoaderCircle
-                  v-if="isAnyPngModeConverting(item)"
-                  :size="14"
-                  class="spin"
-                />
-                <template v-else>
-                  <component :is="getFormatIcon('png')" :size="14" />
-                  <span>PNG</span>
-                  <ChevronDown
-                    :size="14"
-                    class="png-export-chevron"
-                    :class="{ 'png-export-chevron-open': isPngMenuOpen(item) }"
-                  />
-                </template>
-              </button>
-              <div class="png-export-options" role="menu">
-                <button
-                  type="button"
-                  :disabled="isPngModeConverting(item, 'desktop')"
-                  @click="convertToPng(item, 'desktop')"
-                >
-                  <LoaderCircle
-                    v-if="isPngModeConverting(item, 'desktop')"
-                    :size="14"
-                    class="spin"
-                  />
-                  <span>Desktop</span>
-                </button>
-                <button
-                  type="button"
-                  :disabled="isPngModeConverting(item, 'mobile')"
-                  @click="convertToPng(item, 'mobile')"
-                >
-                  <LoaderCircle
-                    v-if="isPngModeConverting(item, 'mobile')"
-                    :size="14"
-                    class="spin"
-                  />
-                  <span>Mobile</span>
-                </button>
-              </div>
-            </div>
-            <template v-if="canConvert(item.kind)">
-              <button
-                v-if="item.kind === 'summary' || item.kind === 'rag_answer'"
-                class="download download-sm"
-                type="button"
-                :disabled="isFancyGenerating(item)"
-                @click="generateFancyHtml(item)"
-              >
-                <LoaderCircle
-                  v-if="isFancyGenerating(item)"
-                  :size="14"
-                  class="spin"
-                />
-                <template v-else>
-                  <component :is="getFormatIcon('html')" :size="14" />
-                  <span>Fancy HTML</span>
-                </template>
-              </button>
-              <button
-                v-if="!isRenderedSummaryKind(item.kind)"
-                class="download download-sm"
-                type="button"
-                :disabled="isConvertButtonLoading(item, 'txt')"
-                @click="onConvertClick(item, 'txt')"
-              >
-                <LoaderCircle
-                  v-if="isConvertButtonLoading(item, 'txt')"
-                  :size="14"
-                  class="spin"
-                />
-                <template v-else>
-                  <component :is="getFormatIcon('txt')" :size="14" />
-                  <span>{{ getFormatLabel('txt') }}</span>
-                </template>
-              </button>
-              <button
-                class="download download-sm"
-                type="button"
-                :disabled="isConvertButtonLoading(item, 'pdf')"
-                @click="onConvertClick(item, 'pdf')"
-              >
-                <LoaderCircle
-                  v-if="isConvertButtonLoading(item, 'pdf')"
-                  :size="14"
-                  class="spin"
-                />
-                <template v-else>
-                  <component :is="getFormatIcon('pdf')" :size="14" />
-                  <span>{{ getFormatLabel('pdf') }}</span>
-                </template>
-              </button>
-              <div
-                class="png-export-menu"
-                :class="{ 'png-export-menu-open': isPngMenuOpen(item) }"
-              >
-                <button
-                  class="download download-sm png-export-trigger"
-                  type="button"
-                  :disabled="isAnyPngModeConverting(item)"
-                  :aria-expanded="isPngMenuOpen(item)"
-                  aria-haspopup="menu"
-                  @click="togglePngMenu(item)"
-                >
-                  <LoaderCircle
-                    v-if="isAnyPngModeConverting(item)"
-                    :size="14"
-                    class="spin"
-                  />
-                  <template v-else>
-                    <component :is="getFormatIcon('png')" :size="14" />
-                    <span>{{ getFormatLabel('png') }}</span>
-                    <ChevronDown
-                      :size="14"
-                      class="png-export-chevron"
-                      :class="{
-                        'png-export-chevron-open': isPngMenuOpen(item)
-                      }"
-                    />
-                  </template>
-                </button>
-                <div class="png-export-options" role="menu">
+            <span>{{ item.summaryGroupFileCount }} 个文件</span>
+          </li>
+          <li
+            :class="[
+              'all-download-item',
+              {
+                'all-download-item-wide': item.isWideLayout,
+                'all-download-item-derived': item.derivedFromSummary
+              }
+            ]"
+          >
+            <div class="all-download-main">
+              <div class="all-download-title-row">
+                <p class="all-download-name">{{ item.displayName }}</p>
+                <div class="all-download-title-meta">
+                  <span class="all-download-format">{{ item.fileType }}</span>
                   <button
+                    v-if="canDeleteMarkdownArtifact(item)"
+                    class="all-download-delete-icon"
                     type="button"
-                    role="menuitem"
-                    :disabled="isPngModeConverting(item, 'desktop')"
-                    @click="convertToPng(item, 'desktop')"
+                    :disabled="isDeleting(item)"
+                    :title="
+                      item.kind === 'summary_fancy_html'
+                        ? '删除该 Fancy HTML'
+                        : '删除该总结'
+                    "
+                    :aria-label="
+                      item.kind === 'summary_fancy_html'
+                        ? '删除该 Fancy HTML'
+                        : '删除该总结'
+                    "
+                    @click="requestDeleteArtifact(item)"
                   >
                     <LoaderCircle
-                      v-if="isPngModeConverting(item, 'desktop')"
+                      v-if="isDeleting(item)"
                       :size="14"
                       class="spin"
                     />
-                    <span>Desktop</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    :disabled="isPngModeConverting(item, 'mobile')"
-                    @click="convertToPng(item, 'mobile')"
-                  >
-                    <LoaderCircle
-                      v-if="isPngModeConverting(item, 'mobile')"
-                      :size="14"
-                      class="spin"
-                    />
-                    <span>Mobile</span>
+                    <Trash2 v-else :size="14" />
                   </button>
                 </div>
               </div>
-              <button
-                v-if="isRenderedSummaryKind(item.kind)"
-                class="download download-sm"
-                type="button"
-                @click="previewRenderedHtml(item)"
+              <div
+                v-if="
+                  item.presetLabel &&
+                  (!item.derivedFromSummary || !item.parentSummaryRowId) &&
+                  !item.showSummaryGroupHeading
+                "
+                class="all-download-tags"
               >
-                <Eye :size="14" />
-                <span>HTML Preview</span>
-              </button>
-            </template>
-          </div>
-        </li>
+                <span class="all-download-tag-label">总结模板</span>
+                <strong class="summary-context-preset">{{
+                  item.presetLabel
+                }}</strong>
+                <template v-if="item.modelProfileLabel">
+                  <i aria-hidden="true"></i>
+                  <span class="all-download-tag-label">模型</span>
+                  <strong class="summary-context-profile">{{
+                    item.modelProfileLabel
+                  }}</strong>
+                </template>
+              </div>
+            </div>
+            <ArtifactActions
+              :item="item"
+              :primary-loading="isPrimaryConverting(item)"
+              :can-convert="canConvert(item.kind)"
+              :fancy-loading="isFancyGenerating(item)"
+              :txt-loading="isConvertButtonLoading(item, 'txt')"
+              :pdf-loading="isConvertButtonLoading(item, 'pdf')"
+              :png-open="isPngMenuOpen(item)"
+              :png-loading="isAnyPngModeConverting(item)"
+              :desktop-png-loading="isPngModeConverting(item, 'desktop')"
+              :mobile-png-loading="isPngModeConverting(item, 'mobile')"
+              :rendered-summary="isRenderedSummaryKind(item.kind)"
+              @primary="handlePrimaryAction(item)"
+              @fancy="generateFancyHtml(item)"
+              @convert="onConvertClick(item, $event)"
+              @toggle-png="togglePngMenu(item)"
+              @png="convertToPng(item, $event)"
+              @preview="previewRenderedHtml(item)"
+            />
+          </li>
+        </template>
       </ul>
     </div>
 
-    <div
-      v-if="allowDelete && deleteConfirmItem"
-      class="modal-overlay"
-      @click="cancelDeleteArtifact"
+    <ConfirmDialog
+      :open="allowDelete && Boolean(deleteConfirmItem)"
+      :title="
+        isFancyHtmlArtifact(deleteConfirmItem)
+          ? '确认删除 Fancy HTML'
+          : '确认删除总结'
+      "
+      confirm-label="确认删除"
+      busy-label="删除中..."
+      :busy="Boolean(deleteConfirmItem && isDeleting(deleteConfirmItem))"
+      @cancel="cancelDeleteArtifact"
+      @confirm="handleDeleteArtifact"
     >
-      <div class="modal-content" @click.stop>
-        <h3>
-          {{
-            isFancyHtmlArtifact(deleteConfirmItem)
-              ? '确认删除 Fancy HTML'
-              : '确认删除总结'
-          }}
-        </h3>
-        <p v-if="isFancyHtmlArtifact(deleteConfirmItem)">
-          此操作将删除该 Fancy HTML 文件，无法恢复：
-        </p>
-        <p v-else>此操作会一次性删除以下派生文件，并且无法恢复：</p>
-        <ul class="delete-preview-list">
-          <li v-if="isFancyHtmlArtifact(deleteConfirmItem)">
-            {{ deleteConfirmItem.displayName }}
-          </li>
-          <li v-else v-for="name in deletePreviewNames" :key="name">
-            {{ name }}
-          </li>
-        </ul>
-        <div class="modal-actions">
-          <button
-            class="cancel-button"
-            type="button"
-            :disabled="isDeleting(deleteConfirmItem)"
-            @click="cancelDeleteArtifact"
-          >
-            取消
-          </button>
-          <button
-            class="confirm-delete-button"
-            type="button"
-            :disabled="isDeleting(deleteConfirmItem)"
-            @click="handleDeleteArtifact"
-          >
-            <LoaderCircle
-              v-if="isDeleting(deleteConfirmItem)"
-              :size="16"
-              class="spin"
-            />
-            <Trash2 v-else :size="16" />
-            <span>{{
-              isDeleting(deleteConfirmItem) ? '删除中...' : '确认删除'
-            }}</span>
-          </button>
-        </div>
-      </div>
-    </div>
+      <p v-if="isFancyHtmlArtifact(deleteConfirmItem)">
+        此操作将删除该 Fancy HTML 文件，无法恢复：
+      </p>
+      <p v-else>此操作会一次性删除以下派生文件，并且无法恢复：</p>
+      <ul class="delete-preview-list">
+        <li v-if="isFancyHtmlArtifact(deleteConfirmItem)">
+          {{ deleteConfirmItem?.displayName }}
+        </li>
+        <li
+          v-for="name in isFancyHtmlArtifact(deleteConfirmItem)
+            ? []
+            : deletePreviewNames"
+          :key="name"
+        >
+          {{ name }}
+        </li>
+      </ul>
+      <template #confirm-icon><Trash2 :size="16" /></template>
+    </ConfirmDialog>
   </div>
 </template>
 
@@ -1196,59 +952,12 @@
   .file-list {
     margin-top: 0;
   }
-
   .delete-preview-list {
     margin: -6px 0 16px;
     padding-left: 18px;
     color: var(--text-soft);
     font-size: 0.88rem;
     line-height: 1.6;
-  }
-
-  /* ─── Download button ────────────────────────────────────────── */
-
-  .download {
-    margin-top: 8px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    border-radius: 13px;
-    font-size: 0.95rem;
-    font-weight: 700;
-    cursor: pointer;
-    min-height: 46px;
-    padding: 0 16px;
-    transition:
-      transform 0.16s ease,
-      box-shadow 0.2s ease,
-      opacity 0.2s ease;
-    border: 1px solid #99d9d2;
-    color: #0f766e;
-    background: linear-gradient(145deg, #f6fffd, #ecfeff);
-    box-shadow: 0 2px 6px rgba(15, 118, 110, 0.08);
-  }
-
-  .download:hover {
-    transform: translateY(-1px);
-    border-color: #67c9be;
-    background: linear-gradient(145deg, #f0fdfa, #e6fffb);
-    box-shadow: 0 6px 16px rgba(15, 118, 110, 0.12);
-  }
-
-  .download:disabled {
-    opacity: 0.64;
-    cursor: not-allowed;
-    transform: none;
-    box-shadow: none;
-  }
-
-  .download-sm {
-    margin-top: 0;
-    min-height: 40px;
-    min-width: 132px;
-    padding: 0 14px;
-    font-size: 0.88rem;
   }
 
   /* ─── File list ──────────────────────────────────────────────── */
@@ -1282,9 +991,68 @@
     gap: 12px;
     align-items: flex-start;
     border: 1px solid rgba(20, 184, 166, 0.22);
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.62);
+    border-radius: 8px;
+    background: #fff;
     padding: 12px;
+  }
+
+  .summary-group-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 4px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--brand);
+    border-radius: 0 6px 6px 0;
+    background: #f1f7f6;
+    color: #64748b;
+    font-size: 0.75rem;
+  }
+
+  .summary-group-identity {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .summary-group-identity > span:first-child {
+    color: var(--brand-strong);
+    font-weight: 800;
+  }
+
+  .summary-group-identity strong {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    min-height: 22px;
+    overflow: hidden;
+    padding: 0 7px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .summary-group-identity .summary-context-preset {
+    border-color: #f4d58b;
+    background: #fff9e9;
+    color: #8a5814;
+  }
+
+  .summary-group-identity .summary-context-profile {
+    border-color: #a9dfbf;
+    background: #effaf4;
+    color: #247044;
+  }
+
+  .summary-group-identity i {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: #a7b3bf;
   }
 
   .all-download-item-derived {
@@ -1334,6 +1102,23 @@
     min-width: 0;
   }
 
+  .all-download-tags {
+    display: flex;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px 7px;
+    color: #7b8a9a;
+    font-size: 0.76rem;
+  }
+
+  .all-download-title-meta {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+  }
+
   .all-download-name {
     flex: 1;
     min-width: 0;
@@ -1373,125 +1158,50 @@
     cursor: not-allowed;
   }
 
-  .all-download-type {
+  .all-download-format {
+    color: #7b8a9a;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .all-download-tags strong {
     display: inline-flex;
     align-items: center;
-    min-height: 22px;
-    padding: 0 8px;
-    border-radius: 999px;
-    border: 1px solid #bae6fd;
-    background: #eff6ff;
-    color: #0c4a6e;
-    font-size: 0.74rem;
+    min-height: 21px;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    border-radius: 5px;
     font-weight: 700;
   }
 
-  .all-download-type-preset {
-    border-color: #fcd34d;
-    background: #fffbeb;
-    color: #92400e;
+  .all-download-tags .summary-context-preset {
+    border-color: #f4d58b;
+    background: #fff9e9;
+    color: #8a5814;
   }
 
-  .all-download-type-profile {
-    border-color: #86efac;
-    background: #f0fdf4;
-    color: #166534;
+  .all-download-tags .summary-context-profile {
+    border-color: #a9dfbf;
+    background: #effaf4;
+    color: #247044;
   }
 
-  .all-download-type-derived {
-    border-color: #cbd5e1;
-    background: #f8fafc;
-    color: #475569;
-  }
-
-  .all-download-derived-note {
-    flex-basis: 100%;
-    margin: 0;
-    font-size: 0.8rem;
-    color: #64748b;
-  }
-
-  .all-download-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    flex-shrink: 0;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .png-export-menu {
-    position: relative;
-  }
-
-  .png-export-options {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    z-index: 20;
-    min-width: 132px;
-    padding: 6px;
-    border-top: 6px solid transparent;
-    border-right: 1px solid rgba(20, 184, 166, 0.24);
-    border-bottom: 1px solid rgba(20, 184, 166, 0.24);
-    border-left: 1px solid rgba(20, 184, 166, 0.24);
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.98);
-    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(-4px);
-    transition:
-      opacity 0.16s ease,
-      transform 0.16s ease;
-  }
-
-  .png-export-menu-open .png-export-options {
-    opacity: 1;
-    pointer-events: auto;
-    transform: translateY(0);
-  }
-
-  .png-export-chevron {
-    transition: transform 0.16s ease;
-  }
-
-  .png-export-chevron-open {
-    transform: rotate(180deg);
-  }
-
-  .png-export-options button {
-    width: 100%;
-    min-height: 34px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 8px;
-    border: none;
-    border-radius: 9px;
-    background: transparent;
-    color: #0f766e;
-    font-size: 0.84rem;
-    font-weight: 700;
-    cursor: pointer;
-    padding: 0 10px;
-  }
-
-  .png-export-options button:hover:not(:disabled),
-  .png-export-options button:focus-visible:not(:disabled) {
-    background: #ecfeff;
-  }
-
-  .png-export-options button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
+  .all-download-tags i {
+    width: 3px;
+    height: 3px;
+    margin: 0 2px;
+    border-radius: 50%;
+    background: #b1bdc9;
   }
 
   /* ─── Responsive ─────────────────────────────────────────────── */
 
   @media (max-width: 640px) {
-    .download {
-      width: 100%;
+    .summary-group-heading {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 5px;
     }
 
     .all-download-item {
@@ -1501,24 +1211,6 @@
 
     .all-download-item-derived {
       margin-left: 10px;
-    }
-
-    .all-download-actions {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      width: 100%;
-      gap: 8px;
-    }
-
-    .all-download-actions .download-sm,
-    .png-export-menu {
-      min-width: 0;
-      width: 100%;
-    }
-
-    .png-export-options {
-      left: 0;
-      right: 0;
     }
   }
 </style>

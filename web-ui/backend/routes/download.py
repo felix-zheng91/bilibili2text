@@ -11,12 +11,13 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from b2t.converter.converter import ConversionFormat, convert_file
 from b2t.converter.md_remove_table import MarkdownRemoveTableConverter
 from b2t.converter.md_to_png import MarkdownToPngConverter
-from b2t.storage import StoredArtifact
-from b2t.storage.base import classify_artifact_filename
+from b2t.storage import ArtifactKind, StoredArtifact
+from b2t.storage.base import resolve_artifact_kind
+from backend.artifacts import materialize_artifact, sibling_storage_key
 from backend.dependencies import get_history_db, get_storage_backend
 from backend.download_registry import download_registry, media_type_for_filename
 from backend.schemas import ConvertRequest, ConvertResponse
-from backend.stock_cache import get_or_fetch_stock_statuses
+from backend.stock_cache import get_cached_stock_statuses
 
 router = APIRouter()
 
@@ -26,13 +27,6 @@ PNG_DESKTOP_DPR = 2
 PNG_MOBILE_VIEWPORT_WIDTH = 430
 PNG_MOBILE_VIEWPORT_HEIGHT = 932
 PNG_MOBILE_DPR = 3
-
-
-def _sibling_storage_key(source_storage_key: str, filename: str) -> str:
-    normalized = source_storage_key.replace("\\", "/")
-    if "/" not in normalized:
-        return filename
-    return f"{normalized.rsplit('/', 1)[0]}/{filename}"
 
 
 def _precomputed_convert_filename(
@@ -64,7 +58,7 @@ def _find_precomputed_conversion(
     source_variant: str | None,
     render_mode: str | None = None,
 ) -> StoredArtifact | None:
-    source_kind = classify_artifact_filename(artifact.filename) or ""
+    source_kind = resolve_artifact_kind(artifact.kind, artifact.filename)
     filename = _precomputed_convert_filename(
         artifact.filename,
         source_kind,
@@ -77,7 +71,7 @@ def _find_precomputed_conversion(
 
     candidate = StoredArtifact(
         filename=filename,
-        storage_key=_sibling_storage_key(artifact.storage_key, filename),
+        storage_key=sibling_storage_key(artifact.storage_key, filename),
         backend=artifact.backend,
     )
     storage_backend = get_storage_backend()
@@ -197,7 +191,9 @@ def _load_stock_statuses_for_render(
     if not bvid:
         return {}
     try:
-        return get_or_fetch_stock_statuses(
+        # Rendering must remain available when market-data providers are slow or
+        # unreachable. Only use data already populated in the local history DB.
+        return get_cached_stock_statuses(
             db=get_history_db(),
             bvid=bvid,
             as_of_date=pubdate,
@@ -264,7 +260,10 @@ def preview_timeline_text(download_id: str) -> PlainTextResponse:
     artifact = download_registry.get_artifact(download_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="下载链接不存在或已过期")
-    if classify_artifact_filename(artifact.filename) != "summary_timeline":
+    if (
+        resolve_artifact_kind(artifact.kind, artifact.filename)
+        != ArtifactKind.SUMMARY_TIMELINE
+    ):
         raise HTTPException(status_code=400, detail="此文件不支持 TXT 预览")
 
     try:
@@ -294,7 +293,7 @@ def preview_rendered_html(
     if artifact is None:
         raise HTTPException(status_code=404, detail="下载链接不存在或已过期")
 
-    source_kind = classify_artifact_filename(artifact.filename) or ""
+    source_kind = resolve_artifact_kind(artifact.kind, artifact.filename)
     if not _uses_summary_render_html(
         source_kind,
         ConversionFormat.HTML,
@@ -341,17 +340,8 @@ def preview_rendered_html(
 
     with tempfile.TemporaryDirectory(prefix="b2t-preview-") as temp_dir:
         temp_dir_path = Path(temp_dir)
-        source_path = temp_dir_path / artifact.filename
         try:
-            with (
-                storage_backend.open_stream(artifact.storage_key) as stream,
-                source_path.open("wb") as output,
-            ):
-                while True:
-                    chunk = stream.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
+            source_path = materialize_artifact(storage_backend, artifact, temp_dir_path)
         except FileNotFoundError:
             raise HTTPException(
                 status_code=410,
@@ -450,18 +440,8 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
     # Download source file to temporary directory
     with tempfile.TemporaryDirectory(prefix="b2t-convert-") as temp_dir:
         temp_dir_path = Path(temp_dir)
-        source_path = temp_dir_path / artifact.filename
-
         try:
-            with (
-                storage_backend.open_stream(artifact.storage_key) as stream,
-                source_path.open("wb") as output,
-            ):
-                while True:
-                    chunk = stream.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
+            source_path = materialize_artifact(storage_backend, artifact, temp_dir_path)
         except FileNotFoundError:
             raise HTTPException(
                 status_code=410,
@@ -475,7 +455,7 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
 
         # Execute conversion
         try:
-            source_kind = classify_artifact_filename(artifact.filename) or ""
+            source_kind = resolve_artifact_kind(artifact.kind, artifact.filename)
             render_source_path = source_path
             explicit_output_path = None
             if (
@@ -525,8 +505,9 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                     artifact=artifact,
                     source_path=render_source_path,
                 )
-                if stock_statuses:
-                    convert_options["stock_statuses"] = stock_statuses
+                # Pass an empty mapping too, so the converters never fall back
+                # to a synchronous market-data query during a download.
+                convert_options["stock_statuses"] = stock_statuses
             if source_kind in {"summary", "summary_table_md"}:
                 pubdate = _lookup_artifact_pubdate(artifact.storage_key)
                 if pubdate:
