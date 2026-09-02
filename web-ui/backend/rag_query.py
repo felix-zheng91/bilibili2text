@@ -83,11 +83,18 @@ class RagQueryService:
             raw_results = await asyncio.to_thread(
                 self._store.query,
                 query_embedding,
-                top_k=self._config.rag.top_k,
+                top_k=max(self._config.rag.top_k * 3, 30),  # Fetch more for post-filtering
                 where=where_filter,
             )
-            sources = self._shape_sources(raw_results)
-            source_chunks = self._source_chunks(raw_results)
+
+            # Post-filter by date range if specified
+            filtered_results = self._filter_by_date(raw_results)
+
+            # Take top_k after filtering
+            filtered_results = filtered_results[: self._config.rag.top_k]
+
+            sources = self._shape_sources(filtered_results)
+            source_chunks = self._source_chunks(filtered_results)
             yield RagQueryEvent(
                 stage="retrieved",
                 sources=sources,
@@ -130,6 +137,35 @@ class RagQueryService:
         except Exception as exc:  # noqa: BLE001
             logger.error("RAG 查询失败: %s", exc)
             yield RagQueryEvent(stage="error", message=str(exc))
+
+    def _filter_by_date(self, results: list[dict]) -> list[dict]:
+        """Filter results by date range (post-processing since ChromaDB doesn't support $and)."""
+        date_from = getattr(self._request, "date_from", None)
+        date_to = getattr(self._request, "date_to", None)
+
+        if not date_from and not date_to:
+            return results
+
+        filtered = []
+        for result in results:
+            metadata = result.get("metadata") or {}
+            pubdate = str(metadata.get("pubdate", "") or "")
+
+            if not pubdate:
+                # Skip entries without pubdate when date filter is active
+                continue
+
+            # Extract just the date part (YYYY-MM-DD) for comparison
+            pubdate_date = pubdate[:10] if len(pubdate) >= 10 else pubdate
+
+            if date_from and pubdate_date < date_from:
+                continue
+            if date_to and pubdate_date > date_to:
+                continue
+
+            filtered.append(result)
+
+        return filtered
 
     def _author_filter(self) -> dict[str, dict[str, list[str]]] | None:
         authors = [
