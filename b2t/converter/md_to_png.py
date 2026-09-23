@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from html import escape
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -183,6 +184,9 @@ HTML_TEMPLATE = r"""<!doctype html>
       gap: 4px 8px;
       margin-bottom: 6px;
     }}
+    .markdown-body .stock-table-fields-single {{
+      grid-template-columns: minmax(0, 1fr);
+    }}
     .markdown-body .stock-table-field {{
       min-width: 0;
     }}
@@ -305,7 +309,8 @@ HTML_TEMPLATE = r"""<!doctype html>
   </style>
 </head>
 <body>
-  <div class="markdown-body">
+  <div class="{root_class}">
+  {metadata_html}
   {body_html}
   </div>
   <script>
@@ -351,6 +356,14 @@ HTML_TEMPLATE = r"""<!doctype html>
 """
 
 STOCK_CARD_MARKER = 'class="stock-table-cards"'
+LEADING_H1_RE = re.compile(r"^\s*<h1\b[^>]*>.*?</h1>\s*", re.IGNORECASE | re.DOTALL)
+LEADING_SUMMARY_METADATA_RE = re.compile(
+    r"^\s*<ul>\s*"
+    r"<li>\s*Creator:\s*.*?</li>\s*"
+    r"<li>\s*Published:\s*.*?</li>\s*"
+    r"</ul>\s*",
+    re.IGNORECASE | re.DOTALL,
+)
 
 FALLBACK_MARKDOWN_CSS = """
 .markdown-body {
@@ -590,10 +603,11 @@ class MarkdownToPngConverter:
             else:
                 width = 1200
 
-        full_html = self._wrap_body_html(
+        full_html = self._build_wrapped_render_html(
             body_html,
             css_url=css_url,
             inline_css=False,
+            options=options,
         )
         html_path.write_text(full_html, encoding="utf-8")
 
@@ -654,10 +668,72 @@ class MarkdownToPngConverter:
             stock_statuses=options.get("stock_statuses"),
             bvid=options.get("bvid", ""),
         )
-        return self._wrap_body_html(
+        return self._build_wrapped_render_html(
             body_html,
             css_url=options.get("css_url", self.css_url),
             inline_css=options.get("inline_css", False),
+            options=options,
+        )
+
+    def _build_wrapped_render_html(
+        self,
+        body_html: str,
+        *,
+        css_url: str,
+        inline_css: bool,
+        options: dict,
+    ) -> str:
+        is_summary = options.get("summary_document", False)
+        if is_summary:
+            body_html = LEADING_H1_RE.sub("", body_html, count=1)
+            body_html = LEADING_SUMMARY_METADATA_RE.sub("", body_html, count=1)
+        return self._wrap_body_html(
+            body_html,
+            css_url=css_url,
+            inline_css=inline_css,
+            root_class=(
+                "markdown-body summary-document" if is_summary else "markdown-body"
+            ),
+            metadata_html=(
+                self._build_summary_metadata_html(
+                    title=options.get("summary_title", ""),
+                    pubdate=options.get("summary_pubdate", ""),
+                    generated_at=options.get("summary_generated_at", ""),
+                )
+                if is_summary
+                else ""
+            ),
+        )
+
+    def _build_summary_metadata_html(
+        self,
+        *,
+        title: str,
+        pubdate: str,
+        generated_at: str,
+    ) -> str:
+        def clean(value: object) -> str:
+            return escape(str(value or "").strip())
+
+        title_text = clean(title) or "视频总结"
+        items = []
+        for label, value in (
+            ("发布时间", clean(pubdate)),
+            ("总结时间", clean(generated_at)),
+        ):
+            if value:
+                items.append(
+                    '<span class="summary-meta-item">'
+                    f'<span class="summary-meta-label">{label}</span>'
+                    f"<span>{value}</span>"
+                    "</span>"
+                )
+        metadata = f'<div class="summary-meta">{"".join(items)}</div>' if items else ""
+        return (
+            '<header class="summary-header">'
+            f'<h1 class="summary-title">{title_text}</h1>'
+            f"{metadata}"
+            "</header>"
         )
 
     def _build_body_html(
@@ -692,10 +768,14 @@ class MarkdownToPngConverter:
         *,
         css_url: str,
         inline_css: bool,
+        root_class: str = "markdown-body",
+        metadata_html: str = "",
     ) -> str:
         return HTML_TEMPLATE.format(
             css_tag=self._build_css_tag(css_url, inline_css=inline_css),
             body_html=body_html,
+            root_class=root_class,
+            metadata_html=metadata_html,
         )
 
     def _build_css_tag(self, css_url: str, *, inline_css: bool) -> str:

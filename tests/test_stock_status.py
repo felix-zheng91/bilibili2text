@@ -1,6 +1,8 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from b2t.stock_status import (
     _baostock_row_to_status,
     _fetch_status_for_symbol,
@@ -508,6 +510,40 @@ def test_build_stock_table_cards_html_renders_clickable_video_times() -> None:
     assert "https://www.bilibili.com/video/BV1gm3v67EEf?t=68" in rendered
     assert "https://www.bilibili.com/video/BV1gm3v67EEf?t=123" in rendered
     assert "&lt;核心逻辑&gt;" in rendered
+
+
+@pytest.mark.parametrize("title_column", ["主题", "学习主题", "Topic"])
+def test_build_stock_table_cards_html_uses_topic_as_card_title(
+    title_column: str,
+) -> None:
+    markdown = f"""| {title_column} | 视频时间 | 内容摘要 |
+| --- | --- | --- |
+| 环境配置 | 00:42 | 安装依赖并检查版本 |
+"""
+
+    rendered = build_stock_table_cards_html(
+        markdown,
+        stock_statuses={},
+        bvid="BV1gm3v67EEf",
+    )
+
+    assert "未命名标的" not in rendered
+    assert "<span>环境配置</span>" in rendered
+    assert f"<span>{title_column}</span>" not in rendered
+    assert "安装依赖并检查版本" in rendered
+    assert "https://www.bilibili.com/video/BV1gm3v67EEf?t=42" in rendered
+
+
+def test_build_stock_table_cards_html_expands_single_field_to_full_width() -> None:
+    markdown = """| 主题 | 内容摘要 |
+| --- | --- |
+| 环境配置 | 安装依赖并检查版本 |
+"""
+
+    rendered = build_stock_table_cards_html(markdown, stock_statuses={})
+
+    assert 'class="stock-table-fields stock-table-fields-single"' in rendered
+    assert "安装依赖并检查版本" in rendered
 
 
 def test_build_stock_table_cards_html_cleans_inline_markdown_for_name_match(

@@ -24,9 +24,32 @@ router = APIRouter()
 PNG_PAD_VIEWPORT_WIDTH = 834
 PNG_PAD_VIEWPORT_HEIGHT = 1112
 PNG_DESKTOP_DPR = 2
-PNG_MOBILE_VIEWPORT_WIDTH = 430
+PNG_MOBILE_VIEWPORT_WIDTH = 460
 PNG_MOBILE_VIEWPORT_HEIGHT = 932
 PNG_MOBILE_DPR = 3
+PNG_RENDER_PRESETS = {
+    "desktop": {
+        "width": PNG_PAD_VIEWPORT_WIDTH,
+        "height": PNG_PAD_VIEWPORT_HEIGHT,
+        "dpr": PNG_DESKTOP_DPR,
+    },
+    "mobile": {
+        "width": PNG_MOBILE_VIEWPORT_WIDTH,
+        "height": PNG_MOBILE_VIEWPORT_HEIGHT,
+        "dpr": PNG_MOBILE_DPR,
+    },
+}
+
+
+def _png_render_options(render_mode: str | None, *, html_source: bool = False) -> dict:
+    mode = (render_mode or "desktop").strip().lower()
+    try:
+        options = dict(PNG_RENDER_PRESETS[mode])
+    except KeyError:
+        options = dict(PNG_RENDER_PRESETS["desktop"])
+    if html_source:
+        options["is_mobile"] = mode == "mobile"
+    return options
 
 
 def _precomputed_convert_filename(
@@ -38,7 +61,11 @@ def _precomputed_convert_filename(
 ) -> str:
     path = Path(filename)
     if target_format == ConversionFormat.PNG:
-        if render_mode not in (None, "", "mobile"):
+        if render_mode == "mobile":
+            # Mobile dimensions are configurable at request time; pre-generated
+            # legacy PNGs may have been rendered at a different viewport.
+            return ""
+        if render_mode not in (None, ""):
             return ""
         if source_kind == "summary":
             if source_variant == "summary_no_table":
@@ -150,6 +177,7 @@ def _build_summary_render_html(
     is_table = bool(html_options.pop("is_table", False))
     if stock_statuses is not None:
         html_options["stock_statuses"] = stock_statuses
+    html_options.update(_summary_metadata_render_options(artifact))
     return MarkdownToPngConverter().build_render_html(
         source_path,
         is_table=is_table,
@@ -180,6 +208,44 @@ def _lookup_artifact_run_context(storage_key: str) -> tuple[str, str]:
 
 def _lookup_artifact_pubdate(storage_key: str) -> str:
     return _lookup_artifact_run_context(storage_key)[1]
+
+
+def _lookup_artifact_summary_metadata(storage_key: str) -> tuple[str, str, str]:
+    """Return summary title, publish date, and run creation time for rendering."""
+    try:
+        db = get_history_db()
+        with db._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT r.title, r.pubdate, r.created_at
+                FROM transcription_artifacts a
+                JOIN transcription_runs r ON r.run_id = a.run_id
+                WHERE a.storage_key = ?
+                LIMIT 1
+                """,
+                (storage_key,),
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        return "", "", ""
+    if row is None:
+        return "", "", ""
+    return (
+        str(row["title"] or "").strip(),
+        str(row["pubdate"] or "").strip(),
+        str(row["created_at"] or "").strip(),
+    )
+
+
+def _summary_metadata_render_options(artifact: StoredArtifact) -> dict[str, object]:
+    title, pubdate, generated_at = _lookup_artifact_summary_metadata(
+        artifact.storage_key
+    )
+    return {
+        "summary_document": True,
+        "summary_title": title,
+        "summary_pubdate": pubdate,
+        "summary_generated_at": generated_at,
+    }
 
 
 def _load_stock_statuses_for_render(
@@ -477,14 +543,10 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
             )
             convert_options = {}
             if target_format == ConversionFormat.PNG and source_suffix in _md_suffixes:
-                if payload.render_mode == "desktop":
-                    convert_options.update(
-                        width=PNG_PAD_VIEWPORT_WIDTH,
-                        height=PNG_PAD_VIEWPORT_HEIGHT,
-                        dpr=PNG_DESKTOP_DPR,
-                    )
+                if payload.render_mode in {"desktop", "mobile"}:
+                    convert_options.update(_png_render_options(payload.render_mode))
                     explicit_output_path = render_source_path.with_name(
-                        f"{render_source_path.stem}_desktop.png"
+                        f"{render_source_path.stem}_{payload.render_mode}.png"
                     )
                 elif source_kind == "summary":
                     convert_options["dpr"] = 4
@@ -493,6 +555,11 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                 convert_options["enhance_stock_tables"] = (
                     payload.source_variant != "summary_no_table"
                 )
+            if target_format == ConversionFormat.PNG and source_kind in {
+                "summary",
+                "summary_table_md",
+            }:
+                convert_options.update(_summary_metadata_render_options(artifact))
             if target_format == ConversionFormat.PDF and source_kind == "summary":
                 convert_options["enhance_stock_tables"] = (
                     payload.source_variant != "summary_no_table"
@@ -517,26 +584,12 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                 and target_format == ConversionFormat.PNG
             ):
                 render_mode = payload.render_mode or "desktop"
-                if render_mode == "mobile":
-                    convert_options.update(
-                        width=PNG_MOBILE_VIEWPORT_WIDTH,
-                        height=PNG_MOBILE_VIEWPORT_HEIGHT,
-                        dpr=PNG_MOBILE_DPR,
-                        is_mobile=True,
-                    )
-                    explicit_output_path = render_source_path.with_name(
-                        f"{render_source_path.stem}_mobile.png"
-                    )
-                else:
-                    convert_options.update(
-                        width=PNG_PAD_VIEWPORT_WIDTH,
-                        height=PNG_PAD_VIEWPORT_HEIGHT,
-                        dpr=PNG_DESKTOP_DPR,
-                        is_mobile=False,
-                    )
-                    explicit_output_path = render_source_path.with_name(
-                        f"{render_source_path.stem}_desktop.png"
-                    )
+                convert_options.update(
+                    _png_render_options(render_mode, html_source=True)
+                )
+                explicit_output_path = render_source_path.with_name(
+                    f"{render_source_path.stem}_{render_mode}.png"
+                )
             if _uses_summary_render_html(
                 source_kind,
                 target_format,

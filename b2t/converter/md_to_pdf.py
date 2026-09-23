@@ -132,6 +132,9 @@ HTML_TEMPLATE = r"""<!doctype html>
       gap: 6px 10px;
       margin-bottom: 8px;
     }}
+    .markdown-body .stock-table-fields-single {{
+      grid-template-columns: minmax(0, 1fr);
+    }}
     .markdown-body .stock-table-field {{
       min-width: 0;
     }}

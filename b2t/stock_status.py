@@ -24,6 +24,18 @@ _STOCK_CODE_RE = re.compile(
 _SUPPORTED_SUFFIXES = {"SH", "SZ", "BJ", "HK"}
 _MARKDOWN_LINK_RE = re.compile(r"!?\[([^\]]*)\]\(([^)]*)\)")
 _MARKDOWN_INLINE_MARKER_RE = re.compile(r"(\*\*|__|`|~~)")
+_TABLE_TITLE_COLUMNS = (
+    "股票名称",
+    "名称",
+    "标的",
+    "公司",
+    "主题",
+    "学习主题",
+    "话题",
+    "Topic",
+    "topic",
+)
+_TABLE_SYMBOL_COLUMNS = ("股票代码", "代码", "证券代码")
 
 
 @dataclass(frozen=True)
@@ -802,24 +814,21 @@ def _render_table_card(
     *,
     bvid: str = "",
 ) -> str:
-    table_name = (
-        _first_matching_value(row.values, ("股票名称", "名称", "标的", "公司")) or ""
-    )
+    table_name = _first_matching_value(row.values, _TABLE_TITLE_COLUMNS) or ""
     effective_status = status
     title = (
         table_name
         or (effective_status.name if effective_status is not None else "")
         or "未命名标的"
     )
-    symbol = _first_matching_value(row.values, ("股票代码", "代码", "证券代码")) or (
+    symbol = _first_matching_value(row.values, _TABLE_SYMBOL_COLUMNS) or (
         effective_status.symbol if effective_status else ""
     )
+    heading_columns = {*_TABLE_TITLE_COLUMNS, *_TABLE_SYMBOL_COLUMNS}
     body_items = [
         (key, value)
         for key, value in row.values.items()
-        if key
-        not in {"股票名称", "名称", "标的", "公司", "股票代码", "代码", "证券代码"}
-        and value.strip()
+        if key not in heading_columns and value.strip()
     ]
 
     status_class = (
@@ -847,8 +856,11 @@ def _render_table_card(
             "</div>"
         )
     body_html = "\n".join(body_parts)
+    fields_class = "stock-table-fields"
+    if len(body_items) == 1:
+        fields_class += " stock-table-fields-single"
     fields_html = (
-        f"""    <div class="stock-table-fields">
+        f"""    <div class="{fields_class}">
 {body_html}
     </div>"""
         if body_html
