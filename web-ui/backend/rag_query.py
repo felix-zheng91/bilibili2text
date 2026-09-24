@@ -70,7 +70,7 @@ class RagQueryService:
         """Yield progress, terminal success, or terminal error events."""
         try:
             question = self._request.question
-            where_filter = self._author_filter()
+            where_filter = self._build_where_filter()
 
             yield RagQueryEvent(stage="embedding", message="正在向量化问题…")
             query_embedding = (
@@ -83,18 +83,12 @@ class RagQueryService:
             raw_results = await asyncio.to_thread(
                 self._store.query,
                 query_embedding,
-                top_k=max(self._config.rag.top_k * 3, 30),  # Fetch more for post-filtering
+                top_k=self._config.rag.top_k,
                 where=where_filter,
             )
 
-            # Post-filter by date range if specified
-            filtered_results = self._filter_by_date(raw_results)
-
-            # Take top_k after filtering
-            filtered_results = filtered_results[: self._config.rag.top_k]
-
-            sources = self._shape_sources(filtered_results)
-            source_chunks = self._source_chunks(filtered_results)
+            sources = self._shape_sources(raw_results)
+            source_chunks = self._source_chunks(raw_results)
             yield RagQueryEvent(
                 stage="retrieved",
                 sources=sources,
@@ -138,43 +132,29 @@ class RagQueryService:
             logger.error("RAG 查询失败: %s", exc)
             yield RagQueryEvent(stage="error", message=str(exc))
 
-    def _filter_by_date(self, results: list[dict]) -> list[dict]:
-        """Filter results by date range (post-processing since ChromaDB doesn't support $and)."""
-        date_from = getattr(self._request, "date_from", None)
-        date_to = getattr(self._request, "date_to", None)
+    def _build_where_filter(self) -> dict | None:
+        """Build a combined ChromaDB where filter for author and date constraints."""
+        conditions = []
 
-        if not date_from and not date_to:
-            return results
-
-        filtered = []
-        for result in results:
-            metadata = result.get("metadata") or {}
-            pubdate = str(metadata.get("pubdate", "") or "")
-
-            if not pubdate:
-                # Skip entries without pubdate when date filter is active
-                continue
-
-            # Extract just the date part (YYYY-MM-DD) for comparison
-            pubdate_date = pubdate[:10] if len(pubdate) >= 10 else pubdate
-
-            if date_from and pubdate_date < date_from:
-                continue
-            if date_to and pubdate_date > date_to:
-                continue
-
-            filtered.append(result)
-
-        return filtered
-
-    def _author_filter(self) -> dict[str, dict[str, list[str]]] | None:
         authors = [
             author.strip() for author in self._request.filter_authors if author.strip()
         ]
-        if not authors:
+        if authors:
+            run_ids = self._history_db.get_run_ids_for_authors(authors)
+            conditions.append({"run_id": {"$in": run_ids or ["__no_match__"]}})
+
+        date_from = getattr(self._request, "date_from", None)
+        date_to = getattr(self._request, "date_to", None)
+        if date_from:
+            conditions.append({"pubdate": {"$gte": date_from}})
+        if date_to:
+            conditions.append({"pubdate": {"$lte": f"{date_to} 23:59:59"}})
+
+        if not conditions:
             return None
-        run_ids = self._history_db.get_run_ids_for_authors(authors)
-        return {"run_id": {"$in": run_ids or ["__no_match__"]}}
+        if len(conditions) == 1:
+            return conditions[0]
+        return {"$and": conditions}
 
     def _shape_sources(self, raw_results: list[dict[str, Any]]) -> list[RagSourceItem]:
         sources: list[RagSourceItem] = []
