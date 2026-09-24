@@ -11,6 +11,7 @@ from backend.download_registry import DownloadRegistry, media_type_for_filename
 from backend.job_store import JobPatch, JobRepository
 from backend.routes.download import (
     _find_precomputed_conversion,
+    _png_render_options,
     convert_artifact,
     preview_timeline_text,
 )
@@ -18,6 +19,21 @@ from backend.schemas import ConvertRequest
 
 from b2t.converter.converter import ConversionFormat
 from b2t.storage import StoredArtifact
+
+
+def test_png_render_options_share_desktop_and_mobile_presets() -> None:
+    assert _png_render_options("desktop") == {
+        "width": 834,
+        "height": 1112,
+        "dpr": 2,
+    }
+    assert _png_render_options("mobile") == {
+        "width": 460,
+        "height": 932,
+        "dpr": 3,
+    }
+    assert _png_render_options("mobile", html_source=True)["is_mobile"] is True
+    assert _png_render_options("desktop", html_source=True)["is_mobile"] is False
 
 
 def test_job_repository_create_patch_cancel() -> None:
@@ -261,15 +277,29 @@ def test_convert_artifact_uses_higher_dpr_only_for_summary_png(monkeypatch) -> N
 
         convert_artifact(ConvertRequest(download_id="summary", target_format="png"))
         convert_artifact(ConvertRequest(download_id="table", target_format="png"))
+        convert_artifact(
+            ConvertRequest(
+                download_id="summary",
+                target_format="png",
+                render_mode="mobile",
+            )
+        )
 
         assert captured[0]["name"] == "BV123_summary.md"
         assert captured[0]["options"]["dpr"] == 4
         assert captured[0]["options"]["is_table"] is False
+        assert captured[0]["options"]["summary_document"] is True
 
         assert captured[1]["name"] == "BV123_summary_table.md"
         assert "dpr" not in captured[1]["options"]
         assert captured[1]["options"]["is_table"] is True
         assert captured[1]["options"]["as_of_date"] == "2026-02-05 21:00:00"
+
+        assert captured[2]["name"] == "BV123_summary.md"
+        assert captured[2]["options"]["width"] == 460
+        assert captured[2]["options"]["height"] == 932
+        assert captured[2]["options"]["dpr"] == 3
+        assert captured[2]["options"]["summary_document"] is True
 
 
 def test_convert_artifact_desktop_png_uses_pad_viewport(monkeypatch) -> None:

@@ -9,6 +9,11 @@ import b2t.converter.md_to_pdf as md_to_pdf_module
 from b2t.converter.md_to_pdf import MarkdownToPdfConverter
 
 
+def test_stock_card_single_field_uses_full_width_grid() -> None:
+    assert ".stock-table-fields-single" in md_to_pdf_module.HTML_TEMPLATE
+    assert "grid-template-columns: minmax(0, 1fr);" in (md_to_pdf_module.HTML_TEMPLATE)
+
+
 def test_convert_uses_pandoc_html_then_playwright_pdf(
     tmp_path: Path, monkeypatch
 ) -> None:
