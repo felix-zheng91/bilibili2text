@@ -70,7 +70,7 @@ class RagQueryService:
         """Yield progress, terminal success, or terminal error events."""
         try:
             question = self._request.question
-            where_filter = self._author_filter()
+            where_filter = self._build_where_filter()
 
             yield RagQueryEvent(stage="embedding", message="正在向量化问题…")
             query_embedding = (
@@ -86,6 +86,7 @@ class RagQueryService:
                 top_k=self._config.rag.top_k,
                 where=where_filter,
             )
+
             sources = self._shape_sources(raw_results)
             source_chunks = self._source_chunks(raw_results)
             yield RagQueryEvent(
@@ -131,14 +132,29 @@ class RagQueryService:
             logger.error("RAG 查询失败: %s", exc)
             yield RagQueryEvent(stage="error", message=str(exc))
 
-    def _author_filter(self) -> dict[str, dict[str, list[str]]] | None:
+    def _build_where_filter(self) -> dict | None:
+        """Build a combined ChromaDB where filter for author and date constraints."""
+        conditions = []
+
         authors = [
             author.strip() for author in self._request.filter_authors if author.strip()
         ]
-        if not authors:
+        if authors:
+            run_ids = self._history_db.get_run_ids_for_authors(authors)
+            conditions.append({"run_id": {"$in": run_ids or ["__no_match__"]}})
+
+        date_from = getattr(self._request, "date_from", None)
+        date_to = getattr(self._request, "date_to", None)
+        if date_from:
+            conditions.append({"pubdate": {"$gte": date_from}})
+        if date_to:
+            conditions.append({"pubdate": {"$lte": f"{date_to} 23:59:59"}})
+
+        if not conditions:
             return None
-        run_ids = self._history_db.get_run_ids_for_authors(authors)
-        return {"run_id": {"$in": run_ids or ["__no_match__"]}}
+        if len(conditions) == 1:
+            return conditions[0]
+        return {"$and": conditions}
 
     def _shape_sources(self, raw_results: list[dict[str, Any]]) -> list[RagSourceItem]:
         sources: list[RagSourceItem] = []

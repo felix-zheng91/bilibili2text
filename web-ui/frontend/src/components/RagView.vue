@@ -28,6 +28,10 @@
   const hasQueried = ref(false)
   const queryStageMessage = ref('')
 
+  // ─── Date range filter ────────────────────────────────────────────
+  const dateFrom = ref('')
+  const dateTo = ref('')
+
   // ─── Author filter ────────────────────────────────────────────────
   const authorList = ref([])
   const selectedAuthors = ref([])
@@ -99,6 +103,8 @@
       const stream = await ragApi.queryStream({
         question: q,
         filter_authors: selectedAuthors.value,
+        date_from: dateFrom.value || null,
+        date_to: dateTo.value || null,
         llm_profile: selectedLlmProfile.value || null,
         api_key: getApiKey() || null,
         deepseek_api_key: getDeepseekApiKey() || null,
@@ -225,6 +231,8 @@
       :question="question"
       :selected-authors="selectedAuthors"
       :author-options="authorOptions"
+      :date-from="dateFrom"
+      :date-to="dateTo"
       :selected-profile="selectedLlmProfile"
       :profiles="llmProfiles"
       :querying="isQuerying"
@@ -232,6 +240,8 @@
       :error="queryError"
       @update:question="question = $event"
       @update:selected-authors="selectedAuthors = $event"
+      @update:date-from="dateFrom = $event"
+      @update:date-to="dateTo = $event"
       @update:selected-profile="selectedLlmProfile = $event"
       @submit="submitQuery"
     />

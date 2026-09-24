@@ -12,6 +12,7 @@ class Chunk:
     bvid: str
     chunk_index: int
     doc_id: str  # "{run_id}__{kind}__{chunk_index}"
+    pubdate: str = ""  # Publication date, may be empty
 
 
 def chunk_markdown(
@@ -21,6 +22,7 @@ def chunk_markdown(
     kind: str,
     title: str,
     bvid: str,
+    pubdate: str = "",
     chunk_size: int = 800,
     chunk_overlap: int = 100,
 ) -> list[Chunk]:
@@ -50,6 +52,7 @@ def chunk_markdown(
                 bvid=bvid,
                 chunk_index=i,
                 doc_id=f"{run_id}__{kind}__{i}",
+                pubdate=pubdate,
             )
         )
     return chunks

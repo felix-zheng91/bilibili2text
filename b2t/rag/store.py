@@ -33,6 +33,7 @@ class RagStore:
                 "title": chunk.title,
                 "bvid": chunk.bvid,
                 "chunk_index": chunk.chunk_index,
+                "pubdate": chunk.pubdate or "",
             }
             for chunk in chunks
         ]

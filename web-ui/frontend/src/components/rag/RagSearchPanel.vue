@@ -1,5 +1,5 @@
 <script setup>
-  import { Brain, LoaderCircle, Search, Users } from 'lucide-vue-next'
+  import { Brain, Calendar, LoaderCircle, Search, Users } from 'lucide-vue-next'
   import InlineNotice from '../common/InlineNotice.vue'
   import MultiSelectPopover from '../common/MultiSelectPopover.vue'
   import SummaryProfileSelect from '../common/SummaryProfileSelect.vue'
@@ -8,6 +8,8 @@
     question: { type: String, default: '' },
     selectedAuthors: { type: Array, default: () => [] },
     authorOptions: { type: Array, default: () => [] },
+    dateFrom: { type: String, default: '' },
+    dateTo: { type: String, default: '' },
     selectedProfile: { type: String, default: '' },
     profiles: { type: Array, default: () => [] },
     querying: Boolean,
@@ -18,6 +20,8 @@
   const emit = defineEmits([
     'update:question',
     'update:selectedAuthors',
+    'update:dateFrom',
+    'update:dateTo',
     'update:selectedProfile',
     'submit'
   ])
@@ -67,6 +71,24 @@
         >
           <template #icon><Users :size="13" /></template>
         </MultiSelectPopover>
+        <div class="date-range-group">
+          <Calendar :size="13" />
+          <input
+            type="date"
+            :value="dateFrom"
+            :disabled="querying"
+            placeholder="开始日期"
+            @input="emit('update:dateFrom', $event.target.value)"
+          />
+          <span class="date-separator">至</span>
+          <input
+            type="date"
+            :value="dateTo"
+            :disabled="querying"
+            placeholder="结束日期"
+            @input="emit('update:dateTo', $event.target.value)"
+          />
+        </div>
         <SummaryProfileSelect
           v-if="profiles.length"
           id="rag-llm-profile"
@@ -174,6 +196,38 @@
     align-items: end;
     flex-wrap: wrap;
     gap: 12px;
+  }
+
+  .date-range-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border: 1.5px solid var(--line);
+    border-radius: 7px;
+    background: #fff;
+    font-size: 0.82rem;
+    color: var(--text-main);
+  }
+
+  .date-range-group:focus-within {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px rgba(15, 143, 131, 0.1);
+  }
+
+  .date-range-group input[type='date'] {
+    border: none;
+    outline: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 0.82rem;
+    min-width: 120px;
+  }
+
+  .date-separator {
+    color: #94a3b8;
+    font-size: 0.75rem;
   }
 
   .filters-row > :last-child {

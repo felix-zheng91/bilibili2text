@@ -54,6 +54,7 @@ def index_run(
         kind=preferred_kind,
         title=detail.title or detail.bvid,
         bvid=detail.bvid,
+        pubdate=getattr(detail, "pubdate", "") or "",
         chunk_size=rag_config.chunk_size,
         chunk_overlap=rag_config.chunk_overlap,
     )

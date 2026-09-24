@@ -8,6 +8,8 @@ from backend.schemas import RuntimeCredentialsRequest
 class RagQueryRequest(RuntimeCredentialsRequest):
     question: str = Field(..., min_length=1, max_length=1000)
     filter_authors: list[str] = Field(default_factory=list)
+    date_from: str | None = None  # ISO date string "YYYY-MM-DD"
+    date_to: str | None = None  # ISO date string "YYYY-MM-DD"
     llm_profile: str | None = None
 
 
