@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from b2t.converter.converter import ConversionFormat, convert_file
 from b2t.converter.md_remove_table import MarkdownRemoveTableConverter
 from b2t.converter.md_to_png import MarkdownToPngConverter
+from b2t.report.generate import REPORT_CSP
 from b2t.storage import ArtifactKind, StoredArtifact
 from b2t.storage.base import resolve_artifact_kind
 from backend.artifacts import materialize_artifact, sibling_storage_key
@@ -26,7 +27,7 @@ PNG_PAD_VIEWPORT_HEIGHT = 1112
 PNG_DESKTOP_DPR = 2
 PNG_MOBILE_VIEWPORT_WIDTH = 460
 PNG_MOBILE_VIEWPORT_HEIGHT = 932
-PNG_MOBILE_DPR = 3
+PNG_MOBILE_DPR = 2
 PNG_RENDER_PRESETS = {
     "desktop": {
         "width": PNG_PAD_VIEWPORT_WIDTH,
@@ -225,7 +226,7 @@ def _lookup_artifact_summary_metadata(storage_key: str) -> tuple[str, str, str]:
                 """,
                 (storage_key,),
             ).fetchone()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return "", "", ""
     if row is None:
         return "", "", ""
@@ -394,7 +395,10 @@ def preview_rendered_html(
         return HTMLResponse(
             html,
             headers={
-                "Content-Disposition": f"inline; filename*=UTF-8''{quoted_filename}"
+                "Content-Disposition": f"inline; filename*=UTF-8''{quoted_filename}",
+                "Content-Security-Policy": REPORT_CSP + "; sandbox allow-popups",
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
             },
         )
 
@@ -549,13 +553,16 @@ def convert_artifact(payload: ConvertRequest) -> ConvertResponse:
                         f"{render_source_path.stem}_{payload.render_mode}.png"
                     )
                 elif source_kind == "summary":
-                    convert_options["dpr"] = 4
+                    convert_options["dpr"] = 2
                     explicit_output_path = render_source_path.with_suffix(".png")
             if target_format == ConversionFormat.PNG and source_kind == "summary":
                 convert_options["enhance_stock_tables"] = (
                     payload.source_variant != "summary_no_table"
                 )
-            if target_format == ConversionFormat.PNG and source_kind in {
+            if target_format in {
+                ConversionFormat.PNG,
+                ConversionFormat.PDF,
+            } and source_kind in {
                 "summary",
                 "summary_table_md",
             }:

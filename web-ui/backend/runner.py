@@ -10,7 +10,11 @@ from b2t.cancellation import CancellationToken, PipelineCancelled
 from b2t.config import STOCK_STATUS_MODE_BACKGROUND_HYBRID, get_stock_status_mode
 from b2t.download.comments import DEFAULT_COMMENT_LIMIT
 from b2t.download.platform import Platform
-from b2t.download.url_detect import detect_platform, extract_platform_id
+from b2t.download.url_detect import (
+    detect_platform,
+    extract_platform_id,
+    normalize_youtube_url,
+)
 from b2t.download.ximalaya import resolve_ximalaya_sound_url
 from b2t.download.yutto_cli import (
     extract_bilibili_target_id,
@@ -18,6 +22,7 @@ from b2t.download.yutto_cli import (
     normalize_bilibili_target,
 )
 from b2t.pipeline import run_pipeline
+from b2t.timezone import SHANGHAI_TZ
 from backend.bvid_locks import bvid_transcription_locks
 from backend.dependencies import (
     get_storage_backend,
@@ -63,6 +68,8 @@ def _infer_resource_id_from_url(url: str) -> tuple[str, str | None]:
             pass
         return normalized_url, extract_bilibili_target_id(normalized_url)
 
+    if platform == Platform.YOUTUBE:
+        normalized_url = normalize_youtube_url(normalized_url)
     if platform == Platform.XIMALAYA:
         try:
             normalized_url, platform_id = resolve_ximalaya_sound_url(normalized_url)
@@ -96,6 +103,7 @@ def _run_job(
     auto_generate_fancy_html: bool,
     stt_profile: str | None = None,
     prefer_bilibili_subtitle: bool = True,
+    prefer_subtitles: bool | None = None,
     include_comments: bool = True,
     comment_limit: int | None = DEFAULT_COMMENT_LIMIT,
     ephemeral_upload: bool = False,
@@ -107,6 +115,7 @@ def _run_job(
     cancellation_token: CancellationToken | None = None,
 ) -> None:
     normalized_url = (url or "").strip()
+    _update_job(job_id, report_source_url=normalized_url)
     normalized_audio_path = (input_audio_path or "").strip()
     bvid = (input_bvid or "").strip() or None
     transcription_id = bvid
@@ -124,7 +133,8 @@ def _run_job(
 
     try:
         config = get_runtime_app_config(
-            require_public_api_key=True,
+            require_public_api_key=bool(normalized_audio_path),
+            user_credentials_only=auto_generate_fancy_html,
             api_key=api_key,
             deepseek_api_key=deepseek_api_key,
             custom_llm_base_url=custom_llm_base_url,
@@ -145,7 +155,7 @@ def _run_job(
         )
         _append_job_log(
             job_id,
-            f"{datetime.now().strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(error_message)}",
+            f"{datetime.now(tz=SHANGHAI_TZ).strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(error_message)}",
         )
         _cleanup_upload_temp_dir(upload_temp_dir)
         return
@@ -161,7 +171,7 @@ def _run_job(
         )
         _append_job_log(
             job_id,
-            f"{datetime.now().strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(error_message)}",
+            f"{datetime.now(tz=SHANGHAI_TZ).strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(error_message)}",
         )
         _cleanup_upload_temp_dir(upload_temp_dir)
         return
@@ -249,7 +259,7 @@ def _run_job(
             )
             _append_job_log(
                 job_id,
-                f"{datetime.now().strftime(JOB_LOG_DATE_FORMAT)} [WARNING] b2t.pipeline: {_redact_text(error_message)}",
+                f"{datetime.now(tz=SHANGHAI_TZ).strftime(JOB_LOG_DATE_FORMAT)} [WARNING] b2t.pipeline: {_redact_text(error_message)}",
             )
             _cleanup_upload_temp_dir(upload_temp_dir)
             return
@@ -266,6 +276,28 @@ def _run_job(
         stage_label="开始处理任务",
         progress=5,
     )
+
+    report_started = False
+
+    def _transcript_ready(source_results):
+        nonlocal report_started
+        report_started = True
+        try:
+            postprocess_scheduler.start_report_from_transcript(
+                job_id=job_id,
+                bvid=bvid,
+                results=source_results,
+                config=config,
+                storage_backend=storage_backend,
+                summary_preset=summary_preset,
+                summary_profile=summary_profile,
+                ephemeral_upload=ephemeral_upload,
+            )
+        except PipelineCancelled:
+            raise
+        except Exception as exc:
+            logger.exception("阅读报告启动失败")
+            _update_job(job_id, fancy_html_status="failed", fancy_html_error=str(exc))
 
     try:
 
@@ -297,6 +329,9 @@ def _run_job(
                     prefer_bilibili_subtitle=False,
                     include_comments=False,
                     progress_callback=_progress,
+                    transcript_ready_callback=_transcript_ready
+                    if auto_generate_fancy_html
+                    else None,
                     metadata_callback=_metadata_ready,
                     comment_status_callback=_comment_status,
                     bilibili_subtitle_used_callback=lambda: _update_job(
@@ -317,9 +352,18 @@ def _run_job(
                     storage_backend=storage_backend,
                     stt_storage_backend=stt_storage_backend,
                     prefer_bilibili_subtitle=prefer_bilibili_subtitle,
+                    prefer_subtitles=prefer_subtitles,
+                    subtitle_used_callback=lambda subtitle: _update_job(
+                        job_id,
+                        subtitle_source=subtitle.source,
+                        subtitle_language=subtitle.language,
+                    ),
                     include_comments=include_comments,
                     comment_limit=comment_limit,
                     progress_callback=_progress,
+                    transcript_ready_callback=_transcript_ready
+                    if auto_generate_fancy_html
+                    else None,
                     metadata_callback=_metadata_ready,
                     comment_status_callback=_comment_status,
                     bilibili_subtitle_used_callback=lambda: _update_job(
@@ -340,7 +384,7 @@ def _run_job(
             )
             _append_job_log(
                 job_id,
-                f"{datetime.now().strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(str(exc))}",
+                f"{datetime.now(tz=SHANGHAI_TZ).strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(str(exc))}",
             )
             return
 
@@ -384,7 +428,7 @@ def _run_job(
                 logger.warning("后处理及文件导出失败（不影响转录结果）: %s", exc)
                 _append_job_log(
                     job_id,
-                    f"{datetime.now().strftime(JOB_LOG_DATE_FORMAT)} [WARNING] b2t.pipeline: 后处理及文件导出失败（不影响转录结果）: {_redact_text(str(exc))}",
+                    f"{datetime.now(tz=SHANGHAI_TZ).strftime(JOB_LOG_DATE_FORMAT)} [WARNING] b2t.pipeline: 后处理及文件导出失败（不影响转录结果）: {_redact_text(str(exc))}",
                 )
 
         try:
@@ -403,7 +447,7 @@ def _run_job(
             )
             _append_job_log(
                 job_id,
-                f"{datetime.now().strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(str(exc))}",
+                f"{datetime.now(tz=SHANGHAI_TZ).strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(str(exc))}",
             )
             return
 
@@ -453,7 +497,7 @@ def _run_job(
             )
             _append_job_log(
                 job_id,
-                f"{datetime.now().strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(str(exc))}",
+                f"{datetime.now(tz=SHANGHAI_TZ).strftime(JOB_LOG_DATE_FORMAT)} [ERROR] b2t.pipeline: {_redact_text(str(exc))}",
             )
             return
 
@@ -486,13 +530,23 @@ def _run_job(
                 _update_job(
                     job_id,
                     notice="临时上传转录结果将在完成后 2 小时自动删除。",
-                    fancy_html_status="idle",
                 )
 
             if cancellation_token is not None:
                 cancellation_token.run_if_active(_finish_ephemeral)
             else:
                 _finish_ephemeral()
+            if auto_generate_fancy_html and not report_started:
+                postprocess_scheduler.trigger_fancy_html_generation(
+                    job_id=job_id,
+                    bvid=None,
+                    results=results,
+                    config=config,
+                    storage_backend=storage_backend,
+                    run_id=None,
+                    summary_preset=summary_preset,
+                    summary_profile=summary_profile,
+                )
         elif bvid is not None:
 
             def _persist_and_succeed() -> str | None:
@@ -518,7 +572,7 @@ def _run_job(
                 config=config,
                 storage_backend=storage_backend,
             )
-            if auto_generate_fancy_html:
+            if auto_generate_fancy_html and not report_started:
                 postprocess_scheduler.trigger_fancy_html_generation(
                     job_id=job_id,
                     bvid=bvid,
@@ -529,14 +583,15 @@ def _run_job(
                     summary_preset=summary_preset,
                     summary_profile=summary_profile,
                 )
-            else:
+            elif not auto_generate_fancy_html:
                 _update_job(job_id, fancy_html_status="idle")
             postprocess_scheduler.trigger_rag_index(_run_id, config)
         else:
 
             def _finish_without_bvid() -> None:
                 _mark_succeeded()
-                _update_job(job_id, fancy_html_status="idle")
+                if not auto_generate_fancy_html:
+                    _update_job(job_id, fancy_html_status="idle")
 
             if cancellation_token is not None:
                 cancellation_token.run_if_active(_finish_without_bvid)

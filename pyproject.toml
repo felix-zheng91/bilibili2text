@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "bilibili-to-text"
 version = "0.1.0"
@@ -7,22 +11,32 @@ requires-python = ">=3.12"
 dependencies = [
     "alibabacloud-oss-v2>=1.2.4",
     "baostock>=0.9.1",
+    "bilibili-api-python>=17.4.2,<18",
     "bilibili-cli>=0.6.2",
     "chromadb>=0.6.0",
     "dashscope>=1.25.12",
+    "fastapi>=0.116.1",
     "groq>=1.0.0",
     "httpx>=0.28.1",
+    "imagequant>=1.1.5,<2",
     "litellm>=1.74.9",
     "minio>=7.2.12",
     "openai>=2.17.0",
     "playwright>=1.52.0",
+    "pillow>=11.0",
     "pydub>=0.25.1",
+    "pydantic>=2.0",
+    "python-multipart>=0.0.20",
+    "qrcode-terminal>=0.8,<0.9",
     "reportlab>=4.4.9",
     "requests>=2.31.0",
     "rich>=13.7.1",
+    "textual>=7.5,<8",
     "tickflow[all]>=0.1.21",
+    "uvicorn>=0.35.0",
     "yfinance>=1.3.0",
     "yutto>=2.1.1",
+    "yt-dlp[default]>=2026.8.19",
 ]
 
 [project.optional-dependencies]
@@ -48,3 +62,6 @@ md-table-pdf = "b2t.converter.md_table_to_pdf:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.ruff.lint]
+ignore = ["BLE001"]

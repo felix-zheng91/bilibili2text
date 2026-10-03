@@ -94,9 +94,17 @@ HTML_TEMPLATE = r"""<!doctype html>
       margin-bottom: 8px;
     }}
     .markdown-body .stock-table-head h3 {{
+      display: flex;
+      align-items: baseline;
+      width: 100%;
+      min-width: 0;
       margin: 0;
       font-size: 17px;
       line-height: 1.3;
+    }}
+    .markdown-body .stock-table-head > div {{
+      width: 100%;
+      min-width: 0;
     }}
     .markdown-body .stock-table-head h3 span,
     .markdown-body .stock-table-head h3 strong {{
@@ -107,6 +115,14 @@ HTML_TEMPLATE = r"""<!doctype html>
       font-size: 16px;
       font-weight: 800;
       color: #64748b;
+    }}
+    .markdown-body .stock-table-head h3 .stock-table-sector {{
+      flex-shrink: 0;
+      margin-left: auto;
+      padding-left: 24px;
+      color: #57606a;
+      font-size: 13px;
+      font-weight: 600;
     }}
     .markdown-body .stock-status-up .stock-table-head h3,
     .markdown-body .stock-status-up .stock-table-head h3 strong,
@@ -137,6 +153,9 @@ HTML_TEMPLATE = r"""<!doctype html>
     }}
     .markdown-body .stock-table-field {{
       min-width: 0;
+    }}
+    .markdown-body .stock-table-field-wide {{
+      grid-column: 1 / -1;
     }}
     .markdown-body .stock-table-field span {{
       display: inline;
@@ -223,6 +242,15 @@ class MarkdownToPdfConverter:
 
         if shutil.which("pandoc") is None:
             raise RuntimeError("pandoc not found, please install pandoc first")
+
+        if options.get("summary_document"):
+            from b2t.converter.md_to_png import MarkdownToPngConverter
+
+            full_html = MarkdownToPngConverter().build_render_html(
+                input_path, **{**options, "inline_css": True}
+            )
+            self._render_html_to_pdf(html_content=full_html, output_path=output_path)
+            return output_path
 
         css_url = options.get("css_url", GITHUB_CSS_URL)
         is_table = options.get("is_table", False)

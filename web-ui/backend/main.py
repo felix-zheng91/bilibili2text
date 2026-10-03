@@ -3,9 +3,9 @@
 import logging
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from b2t.converter.md_to_png import shutdown_png_renderer, warmup_png_renderer
+from backend.cors import configure_cors
 from backend.ephemeral_uploads import (
     start_ephemeral_upload_cleanup,
     stop_ephemeral_upload_cleanup,
@@ -17,6 +17,7 @@ from backend.routes.health import router as health_router
 from backend.routes.history import router as history_router
 from backend.routes.process import router as process_router
 from backend.routes.rag import router as rag_router
+from backend.routes.report import router as report_router
 from backend.routes.runtime_routes import router as runtime_router
 from backend.routes.summary import router as summary_router
 from backend.task_queue import shutdown_task_queues
@@ -24,16 +25,7 @@ from backend.task_queue import shutdown_task_queues
 app = FastAPI(title="bilibili-to-text API", version="0.1.0")
 logger = logging.getLogger(__name__)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+configure_cors(app)
 
 
 @app.on_event("startup")
@@ -42,7 +34,7 @@ def on_startup() -> None:
     start_ephemeral_upload_cleanup()
     try:
         warmup_png_renderer()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("PNG 渲染器预热失败，将在首次转换时重试: %s", exc)
 
 
@@ -60,4 +52,5 @@ app.include_router(config_router)
 app.include_router(history_router)
 app.include_router(download_router)
 app.include_router(summary_router)
+app.include_router(report_router)
 app.include_router(rag_router)

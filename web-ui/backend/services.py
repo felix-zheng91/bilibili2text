@@ -305,6 +305,7 @@ def _build_all_download_items(
                 "url": f"/api/download/{download_id}",
                 "filename": artifact.filename,
                 "kind": kind,
+                "summary_profile": artifact.summary_profile,
             }
         )
     return items
@@ -558,7 +559,7 @@ def _generate_summary_png_exports(
             as_of_date=as_of_date,
             enhance_stock_tables=True,
             stock_statuses=stock_statuses,
-            dpr=4,
+            dpr=2,
         )
         generated["summary_png"] = replace(
             _store_sibling_artifact(
@@ -772,7 +773,7 @@ def _run_summary_only_from_existing(
                     continue
                 try:
                     storage_backend.delete_file(artifact.storage_key)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning(
                         "清理已取消的总结产物失败: %s: %s",
                         artifact.storage_key,
@@ -805,6 +806,23 @@ def _run_fancy_html_only_from_summary(
         ArtifactKind.RAG_ANSWER,
     ):
         raise ValueError("仅支持基于总结 Markdown 或知识库回答生成 fancy HTML")
+
+    if (
+        resolve_artifact_kind(summary_artifact.kind, summary_artifact.filename)
+        == ArtifactKind.SUMMARY
+    ):
+        from b2t.report.options import ReportOptions
+        from backend.report_service import (
+            generate_stored_report,
+            transcript_for_summary,
+        )
+
+        return generate_stored_report(
+            source_artifact=transcript_for_summary(summary_artifact),
+            storage_backend=storage_backend,
+            config=config,
+            options=ReportOptions(profile=summary_profile or ""),
+        )
 
     cleanup_temp_dir: tempfile.TemporaryDirectory | None = None
     local_temp_dir: Path | None = None
@@ -944,6 +962,7 @@ def _artifact_download_item(artifact: StoredArtifact) -> dict[str, str]:
         "url": f"/api/download/{download_registry.store_artifact(artifact)}",
         "filename": artifact.filename,
         "kind": resolve_artifact_kind(artifact.kind, artifact.filename),
+        "summary_profile": artifact.summary_profile,
     }
 
 

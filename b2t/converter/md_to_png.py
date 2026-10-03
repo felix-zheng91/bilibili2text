@@ -14,9 +14,11 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
+import imagequant
 from playwright.sync_api import sync_playwright
 
 from b2t.converter.chromium import chromium_launch_options
+from b2t.converter.summary_style import SUMMARY_CSS, SUMMARY_LINKS
 from b2t.stock_status import build_stock_table_cards_html, extract_stock_symbols
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,64 @@ def _load_playwright_render_timeout_ms() -> int:
 
 
 PLAYWRIGHT_RENDER_TIMEOUT_MS = _load_playwright_render_timeout_ms()
+PNG_QUANTIZE_MAX_COLORS = 256
+PNG_QUANTIZE_MIN_QUALITY = 85
+PNG_QUANTIZE_MAX_QUALITY = 95
+
+
+def optimize_png_file(path: Path) -> None:
+    """Quantize a PNG in place while preserving the original on failure."""
+    if Image is None:
+        raise RuntimeError("Pillow is required to optimize PNG exports")
+
+    path = path.expanduser().resolve()
+    original_size = path.stat().st_size
+    temporary_path: Path | None = None
+    quantized = None
+    try:
+        with Image.open(path) as source:
+            source.load()
+            with source.convert("RGBA") as rgba_source:
+                quantized_data, palette = imagequant.quantize_raw_rgba_bytes(
+                    rgba_source.tobytes(),
+                    rgba_source.width,
+                    rgba_source.height,
+                    max_colors=PNG_QUANTIZE_MAX_COLORS,
+                    min_quality=PNG_QUANTIZE_MIN_QUALITY,
+                    max_quality=PNG_QUANTIZE_MAX_QUALITY,
+                )
+                quantized = Image.frombytes(
+                    "P",
+                    rgba_source.size,
+                    quantized_data,
+                    decoder_name="raw",
+                )
+                quantized.putpalette(palette, rawmode="RGBA")
+
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{path.stem}-",
+            suffix=".png",
+            dir=path.parent,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        quantized.save(temporary_path, format="PNG", optimize=True)
+        temporary_path.replace(path)
+        temporary_path = None
+    finally:
+        if quantized is not None:
+            quantized.close()
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+    optimized_size = path.stat().st_size
+    logger.info(
+        "PNG optimized with imagequant: %s (%d -> %d bytes)",
+        path,
+        original_size,
+        optimized_size,
+    )
+
 
 HTML_TEMPLATE = r"""<!doctype html>
 <html>
@@ -138,9 +198,17 @@ HTML_TEMPLATE = r"""<!doctype html>
       margin-bottom: 6px;
     }}
     .markdown-body .stock-table-head h3 {{
+      display: flex;
+      align-items: baseline;
+      width: 100%;
+      min-width: 0;
       margin: 0;
       font-size: 18px;
       line-height: 1.25;
+    }}
+    .markdown-body .stock-table-head > div {{
+      width: 100%;
+      min-width: 0;
     }}
     .markdown-body .stock-table-head h3 span,
     .markdown-body .stock-table-head h3 strong {{
@@ -151,6 +219,14 @@ HTML_TEMPLATE = r"""<!doctype html>
       font-size: 17px;
       font-weight: 800;
       color: #64748b;
+    }}
+    .markdown-body .stock-table-head h3 .stock-table-sector {{
+      flex-shrink: 0;
+      margin-left: auto;
+      padding-left: 24px;
+      color: #57606a;
+      font-size: 14px;
+      font-weight: 600;
     }}
     .markdown-body .stock-status-up .stock-table-head h3 {{
       color: #cf222e;
@@ -189,6 +265,9 @@ HTML_TEMPLATE = r"""<!doctype html>
     }}
     .markdown-body .stock-table-field {{
       min-width: 0;
+    }}
+    .markdown-body .stock-table-field-wide {{
+      grid-column: 1 / -1;
     }}
     .markdown-body .stock-table-field span {{
       display: inline;
@@ -307,6 +386,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       }}
     }}
   </style>
+  <style>{summary_css}</style>
 </head>
 <body>
   <div class="{root_class}">
@@ -485,11 +565,11 @@ class _ChromiumWorker:
                         break
                     try:
                         task.fn(browser)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         task.error = exc
                     finally:
                         task.done.set()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._startup_error = exc
             self._ready.set()
             while True:
@@ -505,7 +585,7 @@ class _ChromiumWorker:
             if browser is not None:
                 try:
                     browser.close()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
 
@@ -519,7 +599,7 @@ class MarkdownToPngConverter:
         self,
         width: int = 390,
         height: int = 844,
-        dpr: int = 3,
+        dpr: int = 2,
         css_url: str = GITHUB_CSS_URL,
     ):
         """
@@ -733,6 +813,7 @@ class MarkdownToPngConverter:
             '<header class="summary-header">'
             f'<h1 class="summary-title">{title_text}</h1>'
             f"{metadata}"
+            f"{SUMMARY_LINKS}"
             "</header>"
         )
 
@@ -773,6 +854,7 @@ class MarkdownToPngConverter:
     ) -> str:
         return HTML_TEMPLATE.format(
             css_tag=self._build_css_tag(css_url, inline_css=inline_css),
+            summary_css=(SUMMARY_CSS if "summary-document" in root_class else ""),
             body_html=body_html,
             root_class=root_class,
             metadata_html=metadata_html,
@@ -1100,25 +1182,26 @@ class MarkdownToPngConverter:
                         tile_height=tile_height,
                     )
                 )
-                return
-
-            with sync_playwright() as p:
-                browser = p.chromium.launch(**chromium_launch_options())
-                try:
-                    self._render_with_browser(
-                        browser,
-                        html_path=html_path,
-                        png_path=png_path,
-                        width=width,
-                        height=height,
-                        dpr=dpr,
-                        max_full_page_height=max_full_page_height,
-                        tile_height=tile_height,
-                    )
-                finally:
-                    browser.close()
+            else:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(**chromium_launch_options())
+                    try:
+                        self._render_with_browser(
+                            browser,
+                            html_path=html_path,
+                            png_path=png_path,
+                            width=width,
+                            height=height,
+                            dpr=dpr,
+                            max_full_page_height=max_full_page_height,
+                            tile_height=tile_height,
+                        )
+                    finally:
+                        browser.close()
         except Exception as exc:
             raise RuntimeError(f"Playwright rendering failed: {exc}") from exc
+
+        optimize_png_file(png_path)
 
     def _capture_tiled_png(
         self,
@@ -1257,6 +1340,7 @@ class HtmlToPngConverter:
         except Exception as exc:
             raise RuntimeError(f"Playwright rendering failed: {exc}") from exc
 
+        optimize_png_file(output_path)
         logger.info("Fancy HTML PNG generated: %s", output_path)
         return output_path
 
@@ -1409,7 +1493,7 @@ def warmup_png_renderer() -> None:
     # Pre-download CSS to local cache to avoid waiting for external requests on first conversion.
     try:
         MarkdownToPngConverter()._resolve_css_href(GITHUB_CSS_URL)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Failed to warm up local CSS cache: %s", exc)
     _CHROMIUM_WORKER.start()
 

@@ -61,6 +61,11 @@ class JobState:
     fancy_html_status: str
     fancy_html_error: str | None
     used_bilibili_subtitle: bool
+    subtitle_source: str = ""
+    subtitle_language: str = ""
+    report_dispatched: bool = False
+    report_source_url: str = ""
+    report_options: dict = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
     stage_started_monotonic: float = field(default_factory=time.monotonic)
     stage_durations_seconds: dict[str, int] = field(
@@ -95,6 +100,7 @@ class JobState:
         summary_profile: str | None,
         summary_prompt_template: str | None,
         auto_generate_fancy_html: bool,
+        report_options: dict | None = None,
         stt_profile: str | None = None,
     ) -> JobState:
         now = utc_iso()
@@ -126,9 +132,8 @@ class JobState:
             summary_prompt_template=summary_prompt_template,
             auto_generate_fancy_html=auto_generate_fancy_html,
             stt_profile=stt_profile,
-            fancy_html_status=(
-                "pending" if auto_generate_fancy_html and not skip_summary else "idle"
-            ),
+            report_options=report_options or {},
+            fancy_html_status=("pending" if auto_generate_fancy_html else "idle"),
             fancy_html_error=None,
             used_bilibili_subtitle=False,
         )
@@ -139,6 +144,7 @@ class JobState:
 
 @dataclass(slots=True)
 class JobPatch:
+    report_source_url: str | None = None
     status: str | None = None
     stage: str | None = None
     stage_label: str | None = None
@@ -155,9 +161,12 @@ class JobPatch:
     summary_table_pdf_download_url: str | None = None
     summary_table_pdf_filename: str | None = None
     auto_generate_fancy_html: bool | None = None
+    report_dispatched: bool | None = None
     fancy_html_status: str | None = None
     fancy_html_error: str | None = None
     used_bilibili_subtitle: bool | None = None
+    subtitle_source: str | None = None
+    subtitle_language: str | None = None
     already_transcribed: bool | None = None
     notice: str | None = None
     all_downloads: list[dict[str, str]] | None = None
@@ -216,6 +225,7 @@ class JobRepository:
         summary_prompt_template: str | None = None,
         auto_generate_fancy_html: bool,
         stt_profile: str | None = None,
+        report_options: dict | None = None,
     ) -> dict[str, JobValue]:
         job = JobState.create(
             skip_summary=skip_summary,
@@ -224,6 +234,7 @@ class JobRepository:
             summary_prompt_template=summary_prompt_template,
             auto_generate_fancy_html=auto_generate_fancy_html,
             stt_profile=stt_profile,
+            report_options=report_options or {},
         )
         with self._lock:
             self._evict_terminal_jobs_locked()
@@ -241,6 +252,7 @@ class JobRepository:
                     job_id
                     for job_id, job in self._jobs.items()
                     if job.status in {"succeeded", "failed", "cancelled"}
+                    and job.fancy_html_status not in {"pending", "running"}
                 ),
                 None,
             )
@@ -278,8 +290,22 @@ class JobRepository:
                     continue
                 if field_name == "progress":
                     value = max(0, min(100, int(value)))
+                if job.auto_generate_fancy_html and field_name in {
+                    "all_downloads",
+                    "ephemeral_artifacts",
+                }:
+                    key = "url" if field_name == "all_downloads" else "storage_key"
+                    merged = {item[key]: item for item in getattr(job, field_name)}
+                    merged.update({item[key]: item for item in value})
+                    value = list(merged.values())
                 setattr(job, field_name, value)
 
+            if (
+                job.status == "failed"
+                and job.fancy_html_status == "pending"
+                and not job.report_dispatched
+            ):
+                job.fancy_html_status = "idle"
             job.updated_at = utc_iso()
         self._notify_change(job_id)
 
@@ -288,8 +314,12 @@ class JobRepository:
             job = self._jobs.get(job_id)
             if job is None:
                 return False, None
-            if job.status not in ("queued", "running"):
+            if job.status not in (
+                "queued",
+                "running",
+            ) and job.fancy_html_status not in {"pending", "running"}:
                 return False, job.status
+            job.fancy_html_status = "idle"
             job.status = "cancelled"
             job.stage = "cancelled"
             job.stage_label = "任务已取消"
@@ -317,7 +347,9 @@ class JobRepository:
                     "job_id": job.job_id,
                     "status": job.status,
                     "stage": job.stage,
-                    "stage_label": job.stage_label,
+                    "stage_label": "阅读报告生成中"
+                    if job.status in {"succeeded", "failed"}
+                    else job.stage_label,
                     "progress": job.progress,
                     "bvid": job.bvid,
                     "title": job.title,
@@ -327,6 +359,7 @@ class JobRepository:
                 }
                 for job in self._jobs.values()
                 if job.status in ("queued", "running")
+                or job.fancy_html_status in {"pending", "running"}
             ]
 
     def get(self, job_id: str) -> dict[str, JobValue] | None:
@@ -369,6 +402,8 @@ class JobRepository:
         expired: list[dict[str, object]] = []
         with self._lock:
             for job in self._jobs.values():
+                if job.fancy_html_status in {"pending", "running"}:
+                    continue
                 if not job.is_ephemeral_upload or not job.expires_at:
                     continue
                 if job.status not in {"succeeded", "failed", "cancelled"}:

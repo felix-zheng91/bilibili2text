@@ -9,6 +9,7 @@ from b2t.download.platform import (
 from b2t.download.url_detect import detect_platform, extract_platform_id
 from b2t.download.xiaoyuzhou import XiaoyuzhouDownloader
 from b2t.download.ximalaya import XimalayaDownloader
+from b2t.download.youtube import YoutubeDownloader
 
 # `b2t.download.yutto` is the default download implementation. On this fork it
 # delegates to the yutto CLI subprocess (`yutto_cli`) instead of the yutto
@@ -22,6 +23,7 @@ __all__ = [
     "PlatformMetadata",
     "XiaoyuzhouDownloader",
     "XimalayaDownloader",
+    "YoutubeDownloader",
     "detect_platform",
     "download_audio",
     "extract_platform_id",

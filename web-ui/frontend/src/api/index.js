@@ -1,3 +1,4 @@
+import { apiUrl } from './url'
 import {
   ApiError,
   requestJson,
@@ -84,6 +85,12 @@ export const historyApi = {
   getDetail: (runId) =>
     requestJson(`/api/history/${encode(runId)}`, {}, '获取详情失败'),
   eventsUrl: (runId) => `/api/history/${encode(runId)}/events`,
+  generateReport: (runId, payload) =>
+    requestJson(
+      `/api/history/${encode(runId)}/report`,
+      { method: 'POST', json: payload },
+      '生成阅读报告失败'
+    ),
   regenerateSummary: (runId, payload) =>
     requestJson(
       `/api/history/${encode(runId)}/regenerate-summary`,
@@ -113,9 +120,16 @@ export const artifactApi = {
     const params = sourceVariant
       ? `?source_variant=${encodeURIComponent(sourceVariant)}`
       : ''
-    return `/api/preview/html/${encode(downloadId)}${params}`
+    return `#/preview/html/${encode(downloadId)}${params}`
   },
-  timelinePreviewUrl: (downloadId) => `/api/preview/txt/${encode(downloadId)}`
+  renderedPreviewSourceUrl: (downloadId, sourceVariant = '') => {
+    const params = sourceVariant
+      ? `?source_variant=${encodeURIComponent(sourceVariant)}`
+      : ''
+    return apiUrl(`/api/preview/html/${encode(downloadId)}${params}`)
+  },
+  timelinePreviewUrl: (downloadId) =>
+    apiUrl(`/api/preview/txt/${encode(downloadId)}`)
 }
 
 export const ragApi = {
@@ -157,4 +171,4 @@ export const openPublicApi = {
     )
 }
 
-export { ApiError, subscribeSse }
+export { ApiError, apiUrl, subscribeSse }

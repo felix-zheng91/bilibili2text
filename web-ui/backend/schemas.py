@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from b2t.report.options import ReportOptions
 from b2t.summarize.llm import validate_summary_prompt_template
 
 
@@ -56,10 +57,11 @@ class SummarySelectionRequest(RuntimeCredentialsRequest):
 
 
 class ProcessRequest(SummarySelectionRequest):
+    report_options: ReportOptions = Field(default_factory=ReportOptions)
     url: str = Field(
         ...,
         min_length=1,
-        description="视频或播客 URL（支持 Bilibili、小宇宙、喜马拉雅）",
+        description="视频或播客 URL（支持 Bilibili、YouTube、小宇宙、喜马拉雅）",
     )
     skip_summary: bool = Field(
         default=False,
@@ -71,11 +73,15 @@ class ProcessRequest(SummarySelectionRequest):
     )
     auto_generate_fancy_html: bool = Field(
         default=False,
-        description="总结完成后是否自动异步生成 fancy HTML",
+        description="转录完成后是否异步生成 Pi 阅读报告",
     )
     prefer_bilibili_subtitle: bool = Field(
         default=True,
         description="是否优先使用 B 站原生字幕，失败后回退到音频 ASR",
+    )
+    prefer_subtitles: bool | None = Field(
+        default=None,
+        description="优先使用平台字幕；未指定时 YouTube 默认启用，B 站沿用原参数",
     )
     include_comments: bool = Field(
         default=True,
@@ -103,6 +109,7 @@ class DownloadItemResponse(BaseModel):
     url: str
     filename: str
     kind: str
+    summary_profile: str = ""
 
 
 class ActiveJobItem(BaseModel):
@@ -123,6 +130,7 @@ class ActiveJobsResponse(BaseModel):
 
 
 class ProcessStatusResponse(BaseModel):
+    report_options: ReportOptions = Field(default_factory=ReportOptions)
     job_id: str
     status: Literal["queued", "running", "succeeded", "failed", "cancelled"]
     skip_summary: bool = False
@@ -149,6 +157,8 @@ class ProcessStatusResponse(BaseModel):
     )
     fancy_html_error: str | None = None
     used_bilibili_subtitle: bool = False
+    subtitle_source: str = ""
+    subtitle_language: str = ""
     already_transcribed: bool = False
     notice: str | None = None
     all_downloads: list[DownloadItemResponse] = Field(default_factory=list)
@@ -199,6 +209,7 @@ class SummaryProfileItemResponse(BaseModel):
 
 
 class SummaryProfileListResponse(BaseModel):
+    default_report_profile: str = ""
     default_profile: str
     selected_profile: str
     profiles: list[SummaryProfileItemResponse]
@@ -224,8 +235,7 @@ class RuntimeFeaturesResponse(BaseModel):
     requires_user_api_key: bool
     api_key_configured: bool
     deepseek_api_key_configured: bool = False
-    counterscale_site_id: str = ""
-    counterscale_tracker_url: str = ""
+    analytics_script_url: str = ""
 
 
 class OpenPublicApiKeyStatusResponse(BaseModel):
@@ -359,6 +369,11 @@ class HistoryRegenerateSummaryRequest(SummarySelectionRequest):
         default=False,
         description="确认覆盖相同模型配置与总结模板生成的已有结果",
     )
+
+
+class HistoryReportRequest(RuntimeCredentialsRequest):
+    report_options: ReportOptions = Field(default_factory=ReportOptions)
+    source_url: str = ""
 
 
 class GenerateFancyHtmlRequest(RuntimeCredentialsRequest):

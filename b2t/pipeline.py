@@ -24,7 +24,7 @@ from b2t.download.comments import (
 )
 from b2t.download.metadata import VideoMetadata, get_video_metadata
 from b2t.download.platform import Platform, build_transcription_artifact_name
-from b2t.download.subtitle import BilibiliSubtitle, fetch_bilibili_subtitle
+from b2t.download.subtitle import Subtitle, fetch_bilibili_subtitle
 from b2t.download.url_detect import detect_platform
 from b2t.download.yutto import download_audio
 from b2t.download.yutto_cli import (
@@ -68,7 +68,7 @@ class PipelineInput:
     metadata: VideoMetadata | None
     bvid: str
     transcription_id: str
-    subtitle: BilibiliSubtitle | None
+    subtitle: Subtitle | None
     use_local_audio: bool
 
 
@@ -82,6 +82,7 @@ def _resolve_pipeline_input(
     prefer_bilibili_subtitle: bool,
     token: CancellationToken,
     emit_progress: Callable[[str, str, int], None],
+    prefer_subtitles: bool | None = None,
 ) -> PipelineInput:
     token.raise_if_cancelled()
     normalized_audio_path = (
@@ -112,7 +113,9 @@ def _resolve_pipeline_input(
     if platform is None and extract_bvid(url) is not None:
         platform = Platform.BILIBILI
     if platform is None:
-        raise ValueError("不支持的 URL，请使用 Bilibili、小宇宙或喜马拉雅链接")
+        raise ValueError(
+            "不支持的 URL，请使用 Bilibili、YouTube 单视频、小宇宙或喜马拉雅链接"
+        )
 
     if platform == Platform.BILIBILI:
         normalized_url = normalize_bilibili_target(url)
@@ -127,13 +130,25 @@ def _resolve_pipeline_input(
                 logger.warning("Failed to fetch video metadata: %s", exc)
 
         subtitle = None
-        if prefer_bilibili_subtitle:
+        use_subtitles = (
+            prefer_bilibili_subtitle if prefer_subtitles is None else prefer_subtitles
+        )
+        if use_subtitles:
             emit_progress("downloading", "获取 B 站字幕", 10)
             logger.info("=== 获取 B 站字幕 ===")
             subtitle = fetch_bilibili_subtitle(normalized_url)
         if subtitle is not None:
             audio_file = None
         else:
+            stt_profile = config.stt.selected_profile
+            if (
+                stt_profile.provider.strip().lower() == "qwen"
+                and not stt_profile.qwen_api_key.strip()
+            ):
+                raise ValueError(
+                    "未获取到可用的 B 站原生字幕，且未配置阿里云 DashScope API Key。"
+                    "任务已终止，请在「API Key」页面添加阿里云 Key 后重新提交，以进行语音识别（ASR）。"
+                )
             emit_progress("downloading", "下载视频音频", 10)
             logger.info("=== 下载音频 ===")
             audio_file, downloaded_metadata = download_audio(
@@ -145,6 +160,42 @@ def _resolve_pipeline_input(
             if metadata is None:
                 metadata = downloaded_metadata
             bvid = bvid or extract_bvid(audio_file.name)
+    elif platform == Platform.YOUTUBE:
+        from b2t.download.youtube import SubtitleFetchError, YoutubeDownloader
+
+        downloader = YoutubeDownloader(cancellation_token=token)
+        emit_progress("downloading", "获取 YouTube 视频信息", 10)
+        metadata = VideoMetadata.from_platform_metadata(downloader.get_metadata(url))
+        bvid = metadata.bvid
+        transcription_id = bvid
+        subtitle = None
+        if prefer_subtitles is not False:
+            emit_progress("downloading", "获取 YouTube 字幕", 10)
+            try:
+                subtitle = downloader.fetch_subtitle(
+                    url,
+                    language=config.download.youtube_subtitle_language,
+                )
+            except SubtitleFetchError as exc:
+                logger.warning("%s", exc)
+                emit_progress("downloading", str(exc), 10)
+            else:
+                if subtitle is None:
+                    logger.info("YouTube 没有符合语言要求的可用字幕，将尝试音频 ASR")
+        if subtitle is not None:
+            audio_file = None
+        else:
+            stt_profile = config.stt.selected_profile
+            if (
+                stt_profile.provider.strip().lower() == "qwen"
+                and not stt_profile.qwen_api_key.strip()
+            ):
+                raise ValueError(
+                    "未能获取可用的 YouTube 字幕，且未配置阿里云 DashScope API Key。"
+                    "请配置 ASR API Key 后重试。"
+                )
+            emit_progress("downloading", "下载 YouTube 音频", 10)
+            audio_file, _ = downloader.download_audio(url, temp_download_dir)
     elif platform == Platform.XIAOYUZHOU:
         emit_progress("downloading", "下载音频", 10)
         logger.info("=== 下载小宇宙音频 ===")
@@ -201,18 +252,21 @@ def run_pipeline(
     stt_storage_backend: "StorageBackend | None" = None,
     prefer_bilibili_subtitle: bool = True,
     bilibili_subtitle_used_callback: Callable[[], None] | None = None,
+    prefer_subtitles: bool | None = None,
+    subtitle_used_callback: Callable[[Subtitle], None] | None = None,
     metadata_callback: Callable[[VideoMetadata], None] | None = None,
     comment_status_callback: Callable[[str, int, int], None] | None = None,
     include_comments: bool = False,
     comment_limit: int | None = DEFAULT_COMMENT_LIMIT,
     cancellation_token: CancellationToken | None = None,
+    transcript_ready_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, StoredArtifact]:
     """Run the full transcription pipeline
 
-    Pipeline: obtain transcript (Bilibili subtitle or ASR) -> Markdown -> summarize
+    Pipeline: obtain transcript (platform subtitles or ASR) -> Markdown -> summarize
 
     Args:
-        url: Bilibili video URL (required when audio_path is None)
+        url: Supported video or podcast URL (required when audio_path is None)
         config: Application config
         audio_path: Local audio path (skip download when provided)
         input_bvid: Optional BV ID, takes priority over URL/filename extraction
@@ -224,7 +278,11 @@ def run_pipeline(
         progress_callback: Stage progress callback with (stage_key, stage_label, progress_percent)
         prefer_bilibili_subtitle: Try Bilibili native subtitles before downloading
             audio. Ignored for local uploads.
+        prefer_subtitles: Use platform subtitles first. When None, YouTube defaults
+            to True and Bilibili follows prefer_bilibili_subtitle.
+        subtitle_used_callback: Receives the subtitle source and language when used.
         metadata_callback: Called as soon as source metadata is available.
+        transcript_ready_callback: Called with persisted source artifacts before summarization.
         comment_status_callback: Called with status, fetched top-level count,
             and fetched reply count while comments are processed.
         include_comments: Fetch platform comments and append summarized viewpoints
@@ -271,6 +329,7 @@ def run_pipeline(
             audio_path=audio_path,
             input_bvid=input_bvid,
             prefer_bilibili_subtitle=prefer_bilibili_subtitle,
+            prefer_subtitles=prefer_subtitles,
             token=token,
             emit_progress=emit_progress,
         )
@@ -373,15 +432,23 @@ def run_pipeline(
 
         if audio_file is None:
             token.raise_if_cancelled()
-            if bilibili_subtitle_used_callback is not None:
+            if subtitle_used_callback is not None:
+                subtitle_used_callback(subtitle)
+            if (
+                subtitle.source == "bilibili_subtitle"
+                and bilibili_subtitle_used_callback is not None
+            ):
                 bilibili_subtitle_used_callback()
             emit_progress("converting", "Generating Markdown", 80)
             logger.info("Work directory: %s", work_dir)
-            logger.info("Using Bilibili native subtitle")
+            logger.info(
+                "Using platform subtitle: %s (%s)", subtitle.source, subtitle.language
+            )
             json_path = work_dir / f"{work_dir.name}_transcription.json"
             subtitle_payload: dict[str, object] = {
                 "text": subtitle.text,
-                "source": "bilibili_subtitle",
+                "source": subtitle.source,
+                "language": subtitle.language,
                 "bvid": bvid,
                 "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
             }
@@ -449,6 +516,58 @@ def run_pipeline(
         md_path = convert_json_to_md(json_path, min_length=config.converter.min_length)
         local_results["markdown"] = md_path
 
+        storage_prefix = f"{transcription_id}-{uuid4().hex[:8]}"
+
+        def persist_artifacts() -> None:
+            newly_stored: list[StoredArtifact] = []
+            try:
+                for artifact_key, artifact_path in local_results.items():
+                    if artifact_key in results:
+                        continue
+                    token.raise_if_cancelled()
+                    object_key = f"{storage_prefix}/{artifact_path.name}"
+
+                    def _store_artifact(
+                        path: Path = artifact_path,
+                        key: str = object_key,
+                    ) -> StoredArtifact:
+                        return storage_backend.store_file(
+                            path,
+                            object_key=key,
+                        )
+
+                    stored = token.run_if_active(_store_artifact)
+                    derived_from = ""
+                    if artifact_key == ArtifactKind.SUMMARY:
+                        derived_from = results["markdown"].storage_key
+                    elif artifact_key in {
+                        ArtifactKind.SUMMARY_TABLE_MD,
+                        ArtifactKind.SUMMARY_TIMELINE,
+                    }:
+                        derived_from = results["summary"].storage_key
+                    newly_stored.append(stored)
+                    results[artifact_key] = replace(
+                        stored,
+                        kind=artifact_key,
+                        derived_from=derived_from,
+                    )
+            except Exception:
+                for artifact in newly_stored:
+                    try:
+                        storage_backend.delete_file(artifact.storage_key)
+                    except Exception as exc:
+                        logger.warning(
+                            "清理未完成任务产物失败: %s: %s",
+                            artifact.storage_key,
+                            exc,
+                        )
+                raise
+
+        if transcript_ready_callback is not None:
+            persist_artifacts()
+            token.raise_if_cancelled()
+            transcript_ready_callback(dict(results))
+
         # 4. LLM Summarization
         if not skip_summary:
             token.raise_if_cancelled()
@@ -478,46 +597,7 @@ def run_pipeline(
             if summary_timeline_path is not None:
                 local_results["summary_timeline"] = summary_timeline_path
 
-        storage_prefix = f"{transcription_id}-{uuid4().hex[:8]}"
-        try:
-            for artifact_key, artifact_path in local_results.items():
-                token.raise_if_cancelled()
-                object_key = f"{storage_prefix}/{artifact_path.name}"
-
-                def _store_artifact(
-                    path: Path = artifact_path,
-                    key: str = object_key,
-                ) -> StoredArtifact:
-                    return storage_backend.store_file(
-                        path,
-                        object_key=key,
-                    )
-
-                stored = token.run_if_active(_store_artifact)
-                derived_from = ""
-                if artifact_key == ArtifactKind.SUMMARY:
-                    derived_from = results["markdown"].storage_key
-                elif artifact_key in {
-                    ArtifactKind.SUMMARY_TABLE_MD,
-                    ArtifactKind.SUMMARY_TIMELINE,
-                }:
-                    derived_from = results["summary"].storage_key
-                results[artifact_key] = replace(
-                    stored,
-                    kind=artifact_key,
-                    derived_from=derived_from,
-                )
-        except Exception:
-            for artifact in results.values():
-                try:
-                    storage_backend.delete_file(artifact.storage_key)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "清理未完成任务产物失败: %s: %s",
-                        artifact.storage_key,
-                        exc,
-                    )
-            raise
+        persist_artifacts()
 
         emit_progress("completed", "处理完成", 100)
         logger.info(

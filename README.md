@@ -31,26 +31,32 @@
 
 ---
 
-`bilibili-to-text` 是一个面向长内容的自动化处理工具。它将视频或播客转换为带上下文的 Markdown 文稿，并进一步生成结构化总结、表格、时间线、Fancy HTML 与知识库索引。既可以通过 Web UI 管理完整工作流，也可以使用 CLI 或监控服务批量运行。
+`bilibili-to-text` 是一个面向长内容的自动化处理工具。它将视频或播客转换为带上下文的 Markdown 文稿，并进一步生成结构化总结、表格、时间线、Fancy HTML 与知识库索引。可以通过 Web UI 或 CLI 处理内容。
 
 > [!TIP]
-> **在线体验：** [b2t.kkkzoz.top:27676](http://b2t.kkkzoz.top:27676)
+> **在线体验：** [b2t.kkkzoz.top](https://b2t.kkkzoz.top/)
 >
 > Open Public 模式使用访问者自己的 API Key；Key 只保存在当前浏览器本地，并仅在任务请求或连接测试时发送给服务端。
+
+<details>
+<summary><strong> 欢迎加入 B2T 微信交流群!</strong></summary>
+
+<p align="center">
+  <img src="./assets/qr_code.jpg" alt="交流群二维码" width="320" />
+</p>
+
+</details>
 
 ## 功能概览
 
 | 能力 | 说明 |
 | --- | --- |
-| 多平台输入 | 解析 Bilibili、小宇宙、喜马拉雅链接；Web UI 支持上传常见音频与视频文件 |
-| Bilibili 评论 | 抓取视频评论（含回复楼、点赞数、UP 主标识），导出为 JSON 与 Markdown，并可作为总结上下文 |
-| 语音转录 | 优先使用 Bilibili 原生字幕，并支持 Groq Whisper、阿里云 DashScope / Qwen ASR、火山引擎 ASR |
+| 多平台输入 | 解析 Bilibili、YouTube 单视频、小宇宙、喜马拉雅链接；Web UI 支持上传常见音频与视频文件 |
+| 语音转录 | 优先使用 Bilibili 字幕或 YouTube 人工/自动字幕，无可用字幕时回退 ASR；支持 Groq Whisper、阿里云 DashScope / Qwen ASR |
 | LLM 总结 | 通过 LiteLLM 兼容接口连接不同模型，支持总结模板、模型配置、评论观点与 UP 主术语上下文 |
-| 内容导出 | 生成 Markdown、TXT、PDF、PNG、HTML、表格和时间线等派生产物 |
-| 历史与检索 | 在 Web UI 中按平台、分区、UP 主筛选转录记录，并使用可选 RAG 知识库跨视频检索和问答 |
-| 任务管理 | 有界任务队列、SSE 实时进度推送、协程式取消，支持后台并发处理多个转录任务 |
+| 内容导出 | 生成 Markdown、TXT、PDF、PNG、HTML、表格和时间线等派生产物；可用 Pi 从完整转写生成精读/速览报告 |
+| 历史与检索 | 在 Web UI 中管理转录记录，并使用可选 RAG 知识库跨视频检索和问答 |
 | 存储后端 | 支持本地目录、MinIO 与阿里云 OSS |
-| 自动化 | 监控指定 Bilibili UP 主的新视频，自动转录总结，并通过飞书机器人发送通知 |
 | 开放服务 | Open Public 模式允许访问者使用自己的 API Key；临时上传不会进入共享历史记录 |
 
 ### 处理流程
@@ -66,9 +72,6 @@ LLM 总结 · 表格 · 时间线 · Fancy HTML
         ↓
 历史记录 · 多格式导出 · RAG 知识检索
 ```
-
-> [!NOTE]
-> 当前主要在 Linux 和 macOS 上验证 Web UI、RAG、Open Public、UP 主监控和飞书通知。CLI 与 Docker/Nginx 部署脚本仍属于实验性使用路径。
 
 ## 界面预览
 
@@ -209,11 +212,7 @@ Groq API Key 可从 [Groq Console](https://console.groq.com/keys) 获取；DashS
 
 ```bash
 # 终端 1：FastAPI，默认端口 8000
-uv run uvicorn backend.main:app \
-  --app-dir web-ui \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --reload
+uv run b2t backend
 ```
 
 ```bash
@@ -233,7 +232,10 @@ bun run dev --backend-port 8001
 
 ### Web UI
 
-Web UI 提供新建转录、实时进度、视频元数据、历史记录（支持按平台、分区、UP 主筛选）、评论查看、总结版本管理、产物转换、API Key 配置与知识库问答等完整工作流。允许浏览器通知后，任务完成时可以从系统通知直接返回对应任务详情。
+新建转录页可独立开启「生成阅读报告」，选择精读/速览和报告模型，使用自己的 API Key。
+该功能替代视频总结的 Fancy HTML 生成；需先[安装 Pi 报告镜像](docs/reports.md)。
+
+Web UI 提供新建转录、实时进度、视频元数据、历史记录、总结版本管理、产物转换、API Key 配置与知识库问答等完整工作流。允许浏览器通知后，任务完成时可以从系统通知直接返回对应任务详情。
 
 ### CLI
 
@@ -263,20 +265,6 @@ uv run b2t "https://www.bilibili.com/video/BVxxxxxxxxxx" --no-summary
 
 ```bash
 uv run b2t --help
-```
-
-### UP 主监控
-
-在 `config.toml` 的 `[monitor]` 和 `[[monitor.creators]]` 中配置监控对象，并在 `[feishu]` 中选择 Webhook 或自建应用通知方式：
-
-```bash
-uv run b2t monitor --config config.toml
-```
-
-单次检查可以使用 `--once`。首次配置建议先运行：
-
-```bash
-uv run b2t monitor --config config.toml --once --verbose
 ```
 
 ## 部署
@@ -350,13 +338,10 @@ docker compose down
 
 ### 宿主机后端 + Nginx 容器
 
-先在宿主机启动后端：
+先在 `config.toml` 中将 `[backend].host` 设置为 `"0.0.0.0"`，以便 Nginx 容器访问宿主机后端，再启动：
 
 ```bash
-uv run uvicorn backend.main:app \
-  --app-dir web-ui \
-  --host 0.0.0.0 \
-  --port 8000
+uv run b2t backend
 ```
 
 再构建前端并启动 Nginx 容器：
@@ -386,7 +371,7 @@ B2T_BACKEND_PORT=8001 \
 
 ### Open Public 模式
 
-Open Public 适合部署公开演示站点。该模式具有以下边界：
+后端默认使用 Open Public 模式，无需设置 `B2T_WEB_UI_MODE`。Open Public 适合部署公开演示站点。该模式具有以下边界：
 
 - 用户在页面中配置自己的 DashScope、DeepSeek 或 OpenAI-compatible API Key。
 - Key 保存在用户浏览器本地，仅在任务请求和连接测试时发送给当前后端。
@@ -397,13 +382,21 @@ Open Public 适合部署公开演示站点。该模式具有以下边界：
 启动方式：
 
 ```bash
-B2T_WEB_UI_MODE=open-public \
-uv run uvicorn backend.main:app \
-  --app-dir web-ui \
-  --host 0.0.0.0 \
-  --port 8000
+uv run b2t backend
 ```
 
+监听地址、端口和跨域来源在 `config.toml` 开头配置，修改后重启后端：
+
+```toml
+[backend]
+host = "127.0.0.1"
+port = 8000
+cors_origins = ["https://b2t.kkkzoz.top", "https://b2t-kkkzoz.pages.dev"]
+```
+
+命令默认读取项目根目录 `config.toml`，也支持 `--config 路径` 或 `B2T_CONFIG`。
+`B2T_CORS_ORIGINS` 若已设置，仍优先于配置文件；无需覆盖时可取消该环境变量。
+需要本地私有模式时可显式使用 `B2T_WEB_UI_MODE=default uv run b2t backend`。
 前端可以继续使用 Vite 开发服务器，也可以使用上述 Nginx 部署脚本。
 
 ## 配置参考
@@ -412,6 +405,7 @@ uv run uvicorn backend.main:app \
 
 | 配置段 | 用途 |
 | --- | --- |
+| `[backend]` | 后端监听地址、端口及允许跨域的前端来源 |
 | `[download]` | 输出目录、数据库目录和音频质量 |
 | `[storage]` | 选择本地、MinIO 或阿里云 OSS 存储 |
 | `[stt]` | 选择 Groq、Qwen / DashScope 或火山引擎语音识别 profile |
@@ -420,9 +414,7 @@ uv run uvicorn backend.main:app \
 | `[converter]` | 控制 Markdown 派生格式与股票状态获取策略 |
 | `[rag]` | 配置 Chroma、Embedding 模型与知识库问答模型 |
 | `[bilibili]` | 可选 Bilibili 登录 Cookie，用于需要登录态的内容 |
-| `[monitor]` | 配置 UP 主列表、检查周期和首次运行行为 |
-| `[feishu]` | 配置 Webhook 或飞书自建应用通知 |
-| `[analytics.counterscale]` | 可选 Web UI 访问统计 |
+| `[analytics]` | 可选 Web UI 访问统计；`script_url` 在本地 `config.toml` 中配置 |
 
 相关文件：
 
@@ -434,7 +426,7 @@ uv run uvicorn backend.main:app \
 
 ```text
 .
-├── b2t/                  # 核心 pipeline、CLI、存储与监控
+├── b2t/                  # 核心 pipeline、CLI 与存储
 ├── web-ui/
 │   ├── backend/          # FastAPI API 与后台任务
 │   └── frontend/         # Vue / Vite Web UI
@@ -480,14 +472,13 @@ bun run build
 
 欢迎通过 GitHub Issues 提交问题和建议。
 
-<details>
-<summary><strong>加入交流群</strong></summary>
+## 致谢
 
-<p align="center">
-  <img src="./assets/qr_code.jpg" alt="交流群二维码" width="320" />
-</p>
+感谢以下开源项目为 b2t 提供支持与灵感：
 
-</details>
+- [yutto](https://github.com/yutto-dev/yutto)：Bilibili 音视频下载。
+- [yfinance](https://github.com/ranaroussi/yfinance)：金融行情数据获取。
+- [video-report-agent](https://github.com/imexlovery/video-report-agent)：阅读报告的生成流程、Skill 与 HTML 模板。
 
 ## License
 

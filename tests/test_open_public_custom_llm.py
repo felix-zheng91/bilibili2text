@@ -86,7 +86,7 @@ def test_open_public_custom_llm_adds_default_profile_without_changing_stt() -> N
     assert config.stt.profiles["open_public_qwen"].diarization_enabled is True
     assert config.stt.profiles["open_public_qwen"].speaker_count == 4
     assert config.summarize.profile == OPEN_PUBLIC_CUSTOM_LLM_PROFILE
-    assert config.fancy_html.profile == OPEN_PUBLIC_CUSTOM_LLM_PROFILE
+    assert config.fancy_html.profile == "bailian-main"
     assert config.rag.llm_profile == OPEN_PUBLIC_CUSTOM_LLM_PROFILE
 
     profile = config.summarize.profiles[OPEN_PUBLIC_CUSTOM_LLM_PROFILE]
@@ -96,12 +96,54 @@ def test_open_public_custom_llm_adds_default_profile_without_changing_stt() -> N
     assert profile.api_base == "https://llm.example.com/v1"
 
 
-def test_open_public_without_custom_llm_keeps_existing_deepseek_priority() -> None:
+def test_open_public_without_custom_llm_preserves_configured_default() -> None:
     config = build_open_public_config(
         _config(),
         api_key="sk-dashscope",
         deepseek_api_key="sk-deepseek",
     )
 
-    assert config.summarize.profile == "deepseek-main"
+    assert config.summarize.profile == "bailian-main"
     assert OPEN_PUBLIC_CUSTOM_LLM_PROFILE not in config.summarize.profiles
+
+
+def test_report_default_is_configured_independently_of_summary(monkeypatch):
+    from dataclasses import replace
+
+    from backend.routes import config_routes
+
+    configured = replace(_config(), fancy_html=FancyHtmlConfig(profile="deepseek-main"))
+    public = build_open_public_config(configured, api_key="user-key")
+    assert public.summarize.profile == "bailian-main"
+    assert public.fancy_html.profile == "deepseek-main"
+    monkeypatch.setattr(
+        config_routes, "get_runtime_app_config", lambda public=public: public
+    )
+    response = config_routes.summarize_profiles()
+    assert response.default_report_profile == "deepseek-main"
+    assert response.selected_profile == "bailian-main"
+
+
+def test_public_defaults_preserve_configured_deepseek_with_multiple_models(monkeypatch):
+    from dataclasses import replace
+
+    from backend.routes import config_routes
+
+    base = _config()
+    profiles = dict(base.summarize.profiles)
+    profiles["deepseek-other"] = replace(profiles["deepseek-main"], model="other-model")
+    configured = replace(
+        base,
+        summarize=replace(base.summarize, profile="deepseek-main", profiles=profiles),
+        rag=replace(base.rag, llm_profile="deepseek-main"),
+    )
+    for key in ("", "user-deepseek-key"):
+        public = build_open_public_config(configured, api_key="", deepseek_api_key=key)
+        assert public.summarize.profile == "deepseek-main"
+        assert public.rag.llm_profile == "deepseek-main"
+        monkeypatch.setattr(
+            config_routes, "get_runtime_app_config", lambda public=public: public
+        )
+        response = config_routes.summarize_profiles()
+        assert response.default_profile == "deepseek-main"
+        assert response.selected_profile == "deepseek-main"
