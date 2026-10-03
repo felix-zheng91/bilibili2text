@@ -1244,6 +1244,7 @@ def _load_monitor_config(raw_monitor: dict, *, base_dir: Path) -> MonitorConfig:
         # Accepted but ignored for compatibility with older monitor configs.
         "lookback_hours",
         "first_run_max_push",
+        "startup_notification",
         "default_check_interval",
         "summary_preset",
         "summary_profile",
