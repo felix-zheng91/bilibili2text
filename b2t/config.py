@@ -1348,7 +1348,7 @@ def _load_analytics_config(raw_analytics: dict) -> AnalyticsConfig:
     if not isinstance(raw_analytics, dict):
         raise ValueError("analytics 配置必须是 TOML 表")
 
-    allowed_fields = {"script_url"}
+    allowed_fields = {"script_url", "counterscale"}
     unknown_fields = sorted(set(raw_analytics.keys()) - allowed_fields)
     if unknown_fields:
         raise ValueError(f"analytics 包含未知字段: {', '.join(unknown_fields)}")
