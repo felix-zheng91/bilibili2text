@@ -52,3 +52,6 @@ web-ui/frontend/dist/
 # Local scratch / external experiments
 /doubao-test/
 /AIFeedTracker/
+
+#workbuddy
+/.workbuddy
