@@ -65,6 +65,29 @@ If the backend port is not `8000`:
 bun run dev --backend-port 8001
 ```
 
+### Login Protection
+
+The Web UI uses the paid ASR/LLM credentials from `config.toml`, so a public deployment must require authentication. Set the following environment variables for the backend process (or in the Docker Compose `.env`):
+
+```bash
+B2T_AUTH_ENABLED=1
+B2T_AUTH_USERNAME=admin
+B2T_AUTH_PASSWORD=<a long random password>
+B2T_AUTH_SESSION_HOURS=168
+```
+
+When `B2T_AUTH_PASSWORD` is set, authentication is enabled even without `B2T_AUTH_ENABLED`. If authentication is enabled but no password or `B2T_AUTH_PASSWORD_HASH` is configured, the backend refuses to start. Sessions are stored in an HMAC-signed HttpOnly cookie, and changing the password invalidates all existing sessions.
+
+To keep only a hash in the environment:
+
+```bash
+docker compose exec -w /app/web-ui backend uv run --no-sync python -m backend.auth hash
+```
+
+The signing secret is read from `B2T_AUTH_SECRET`; when unset, it is generated once and stored in `db_data/.auth_secret`. Login attempts are limited to 5 failures per IP per 5 minutes, followed by a 15 minute lockout.
+
+For an additional edge layer, configure [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/applications/) for the public hostname and restrict it to your email address.
+
 ### Open-Public Mode
 
 ```bash

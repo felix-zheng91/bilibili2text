@@ -303,6 +303,33 @@ cp .env.example .env
 
 Linux 用户应将 `.env` 中的 `B2T_UID` 和 `B2T_GID` 设置为 `id -u`、`id -g` 输出的数字，确保容器写入 `transcriptions`、`db_data` 和 `chroma_data` 的文件仍属于当前宿主用户。Docker Desktop 用户可以保留默认值 `1000`。
 
+#### 登录保护（公网部署必读）
+
+`default` 模式会使用 `config.toml` 中配置的付费 ASR / LLM 凭据。通过 Cloudflare 暴露到公网时，必须启用登录保护，否则任何拿到地址的人都可以提交任务并消耗你的额度。
+
+在 `.env` 中设置：
+
+```bash
+B2T_AUTH_ENABLED=1
+B2T_AUTH_USERNAME=admin
+B2T_AUTH_PASSWORD=<至少 16 位的随机密码>
+B2T_AUTH_SESSION_HOURS=168
+```
+
+- 配置 `B2T_AUTH_PASSWORD` 后会自动启用登录；显式设置 `B2T_AUTH_ENABLED=1` 但未配置密码或哈希时，后端会拒绝启动，避免误暴露。
+- 也可以只保存 scrypt 哈希，不把明文密码写进 `.env`：
+
+  ```bash
+  docker compose exec -w /app/web-ui backend uv run --no-sync python -m backend.auth hash
+  ```
+
+  将输出写入 `B2T_AUTH_PASSWORD_HASH`，并清空 `B2T_AUTH_PASSWORD`。
+- 登录会话使用 HMAC 签名的 HttpOnly Cookie，默认 7 天有效；修改密码后所有旧会话自动失效。签名密钥可通过 `B2T_AUTH_SECRET` 固定；未设置时会自动生成并保存到 `db_data/.auth_secret`。
+- 登录接口内置限流：同一 IP 在 5 分钟内连续失败 5 次后锁定 15 分钟。
+- 本地开发不设置任何 `B2T_AUTH_*` 变量时登录保护关闭，后端启动日志会输出警告。
+
+建议再叠加一层 [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/applications/)：在 Zero Trust → Access → Applications 中创建 Self-hosted 应用，域名填写对外域名，策略选择 `Allow` 并限定邮箱或邮箱域名，登录方式可用 One-time PIN。这样未通过 Cloudflare 身份验证的请求会在边缘被拦截，不会到达源站。同时建议使用 Cloudflare Tunnel 或防火墙只允许 Cloudflare IP 访问源站，避免有人绕过代理直连。
+
 首次启动或更新镜像：
 
 ```bash

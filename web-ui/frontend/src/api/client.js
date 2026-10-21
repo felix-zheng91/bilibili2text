@@ -7,13 +7,29 @@ export class ApiError extends Error {
   }
 }
 
+export const UNAUTHORIZED_EVENT = 'b2t:unauthorized'
+
+const notifyUnauthorized = (response, url) => {
+  if (response.status !== 401) return
+  if (
+    url.startsWith('/api/auth/login') ||
+    url.startsWith('/api/auth/session')
+  ) {
+    return
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+  }
+}
+
 const buildRequestOptions = (options) => {
   const { json, headers, ...requestOptions } = options
   if (json === undefined) {
-    return { headers, ...requestOptions }
+    return { credentials: 'same-origin', headers, ...requestOptions }
   }
   return {
     ...requestOptions,
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
       ...headers
@@ -59,6 +75,7 @@ export const requestJson = async (
   fallbackMessage = '请求失败'
 ) => {
   const response = await fetchResponse(url, options, fallbackMessage)
+  notifyUnauthorized(response, url)
   const data = await parseJson(response, fallbackMessage)
   if (!response.ok) {
     throw new ApiError(errorMessage(response, data, fallbackMessage), {
@@ -81,6 +98,7 @@ export const requestText = async (
   fallbackMessage = '请求失败'
 ) => {
   const response = await fetchResponse(url, options, fallbackMessage)
+  notifyUnauthorized(response, url)
   const text = await response.text()
   if (!response.ok) {
     throw new ApiError(`${fallbackMessage}（HTTP ${response.status}）`, {
@@ -96,6 +114,7 @@ export const requestStream = async (
   fallbackMessage = '请求失败'
 ) => {
   const response = await fetchResponse(url, options, fallbackMessage)
+  notifyUnauthorized(response, url)
   if (!response.ok) {
     const data = await parseJson(response, fallbackMessage)
     throw new ApiError(errorMessage(response, data, fallbackMessage), {

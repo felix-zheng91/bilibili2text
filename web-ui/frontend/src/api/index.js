@@ -26,6 +26,18 @@ export const runtimeApi = {
   getFeatures: () => requestJson('/api/runtime', {}, '获取运行时配置失败')
 }
 
+export const authApi = {
+  getSession: () => requestJson('/api/auth/session', {}, '获取登录状态失败'),
+  login: (username, password) =>
+    requestJson(
+      '/api/auth/login',
+      { method: 'POST', json: { username, password } },
+      '登录失败'
+    ),
+  logout: () =>
+    requestJson('/api/auth/logout', { method: 'POST' }, '退出登录失败')
+}
+
 export const summaryApi = {
   getPresets: () =>
     requestJson('/api/summary-presets', {}, '获取总结 presets 失败'),

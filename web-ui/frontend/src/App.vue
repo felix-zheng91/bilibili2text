@@ -6,9 +6,12 @@
     Brain,
     History,
     KeyRound,
+    LogOut,
     Sparkles
   } from 'lucide-vue-next'
+  import { UNAUTHORIZED_EVENT } from './api/client'
   import { startJobStore, stopJobStore } from './composables/useJobStore'
+  import { useAuth } from './composables/useAuth'
   import { usePublicCredentials } from './composables/usePublicCredentials'
   import { useRuntimeFeatures } from './composables/useRuntimeFeatures'
   import { useSummaryConfig } from './composables/useSummaryConfig'
@@ -18,6 +21,51 @@
   const { isOpenPublic, loadRuntimeFeatures } = useRuntimeFeatures()
   const { refreshCredentials } = usePublicCredentials()
   const { initializeSummaryConfig } = useSummaryConfig()
+  const {
+    authRequired,
+    authenticated,
+    username,
+    checkSession,
+    logout,
+    markUnauthenticated,
+    sessionChecked
+  } = useAuth()
+
+  const isLoginPage = computed(() => route.name === 'login')
+  let appInitialized = false
+
+  const initializeApp = async () => {
+    if (appInitialized || !authenticated.value) return
+    appInitialized = true
+    startJobStore()
+    refreshCredentials()
+    void initializeSummaryConfig()
+    await loadRuntimeFeatures()
+    if (!isOpenPublic.value && route.path === '/settings') {
+      router.push('/process')
+    }
+  }
+
+  const teardownApp = () => {
+    if (!appInitialized) return
+    appInitialized = false
+    stopJobStore()
+  }
+
+  const handleUnauthorized = () => {
+    markUnauthenticated()
+    if (route.name !== 'login') {
+      router.replace({
+        name: 'login',
+        query: { redirect: route.fullPath }
+      })
+    }
+  }
+
+  const handleLogout = async () => {
+    await logout()
+    await router.replace({ name: 'login' })
+  }
 
   const navigation = computed(() => [
     { key: 'process', label: '新建转录', path: '/process', icon: Sparkles },
@@ -50,20 +98,23 @@
       }
   )
 
-  onMounted(() => {
-    startJobStore()
-    refreshCredentials()
-    void initializeSummaryConfig()
-    void (async () => {
-      await loadRuntimeFeatures()
-      if (!isOpenPublic.value && route.path === '/settings') {
-        router.push('/process')
-      }
-    })()
+  onMounted(async () => {
+    window.addEventListener(UNAUTHORIZED_EVENT, handleUnauthorized)
+    await checkSession()
+    await initializeApp()
   })
 
   onBeforeUnmount(() => {
-    stopJobStore()
+    window.removeEventListener(UNAUTHORIZED_EVENT, handleUnauthorized)
+    teardownApp()
+  })
+
+  watch(authenticated, (isAuthenticated) => {
+    if (isAuthenticated) {
+      void initializeApp()
+    } else {
+      teardownApp()
+    }
   })
 
   watch(isOpenPublic, (openPublic) => {
@@ -72,7 +123,9 @@
 </script>
 
 <template>
-  <div class="app-shell">
+  <RouterView v-if="isLoginPage" />
+  <div v-else-if="!sessionChecked" class="app-boot" aria-hidden="true"></div>
+  <div v-else class="app-shell">
     <header class="topbar">
       <div class="topbar-inner">
         <RouterLink
@@ -98,6 +151,22 @@
             <span>{{ item.label }}</span>
           </button>
         </nav>
+
+        <div v-if="authRequired" class="topbar-account">
+          <span class="account-name" :title="username">
+            {{ username || '已登录' }}
+          </span>
+          <button
+            class="logout-button"
+            type="button"
+            title="退出登录"
+            aria-label="退出登录"
+            @click="handleLogout"
+          >
+            <LogOut :size="15" />
+            <span>退出</span>
+          </button>
+        </div>
       </div>
     </header>
 
@@ -115,6 +184,10 @@
     min-height: 100vh;
   }
 
+  .app-boot {
+    min-height: 100vh;
+  }
+
   .topbar {
     position: sticky;
     z-index: 100;
@@ -126,7 +199,7 @@
 
   .topbar-inner {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     width: 100%;
     max-width: 1440px;
@@ -230,6 +303,55 @@
     outline-offset: -3px;
   }
 
+  .topbar-account {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding-left: 18px;
+  }
+
+  .account-name {
+    overflow: hidden;
+    max-width: 120px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .logout-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #fff;
+    color: var(--text-soft);
+    font-size: 0.76rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition:
+      border-color 0.15s ease,
+      background-color 0.15s ease,
+      color 0.15s ease;
+  }
+
+  .logout-button:hover {
+    border-color: #c4ced7;
+    background: #f6f8f9;
+    color: var(--text-main);
+  }
+
+  .logout-button:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+
   .workspace-content {
     width: 100%;
     max-width: 1440px;
@@ -263,13 +385,17 @@
 
   @media (max-width: 760px) {
     .topbar-inner {
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr) auto;
       min-height: 0;
       padding: 10px 20px 0;
     }
 
     .brand-lockup {
       padding-right: 0;
+    }
+
+    .topbar-account {
+      padding-left: 10px;
     }
 
     .top-tabs {
@@ -292,6 +418,20 @@
   @media (max-width: 520px) {
     .topbar-inner {
       padding-inline: 14px;
+    }
+
+    .account-name {
+      display: none;
+    }
+
+    .logout-button span {
+      display: none;
+    }
+
+    .logout-button {
+      width: 32px;
+      padding: 0;
+      justify-content: center;
     }
 
     .top-tabs button {

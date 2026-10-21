@@ -20,6 +20,9 @@ wheels/
 *.egg-info
 .pytest_cache/
 .uv-cache/
+.uv-tools/
+.uv-tools-bin/
+.docker/
 
 # Virtual environments
 .venv/

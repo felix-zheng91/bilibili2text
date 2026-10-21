@@ -228,6 +228,18 @@ class RuntimeFeaturesResponse(BaseModel):
     counterscale_tracker_url: str = ""
 
 
+class AuthSessionResponse(BaseModel):
+    auth_required: bool
+    authenticated: bool
+    username: str | None = None
+    expires_at: str | None = None
+
+
+class AuthLoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=128)
+    password: str = Field(..., min_length=1, max_length=1024)
+
+
 class OpenPublicApiKeyStatusResponse(BaseModel):
     provider: Literal["alibaba", "deepseek"] = "alibaba"
     configured: bool

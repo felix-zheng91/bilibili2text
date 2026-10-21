@@ -9,6 +9,12 @@ services:
         APP_GID: ${B2T_GID:-1000}
     environment:
       B2T_WEB_UI_MODE: ${B2T_WEB_UI_MODE:-default}
+      B2T_AUTH_ENABLED: ${B2T_AUTH_ENABLED:-}
+      B2T_AUTH_USERNAME: ${B2T_AUTH_USERNAME:-admin}
+      B2T_AUTH_PASSWORD: ${B2T_AUTH_PASSWORD:-}
+      B2T_AUTH_PASSWORD_HASH: ${B2T_AUTH_PASSWORD_HASH:-}
+      B2T_AUTH_SECRET: ${B2T_AUTH_SECRET:-}
+      B2T_AUTH_SESSION_HOURS: ${B2T_AUTH_SESSION_HOURS:-168}
       TZ: ${B2T_TIMEZONE:-Asia/Shanghai}
     user: "${B2T_UID:-1000}:${B2T_GID:-1000}"
     expose:
