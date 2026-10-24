@@ -395,11 +395,15 @@
     }
 
     .topbar-account {
+      grid-row: 1;
+      grid-column: 2;
+      justify-self: end;
       padding-left: 10px;
     }
 
     .top-tabs {
       grid-column: 1 / -1;
+      grid-row: 2;
       min-height: 44px;
       margin-top: 7px;
     }
